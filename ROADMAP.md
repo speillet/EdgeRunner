@@ -7,7 +7,8 @@
 ## 0. Reprendre ici
 
 - **Dernière mise à jour** : 2026-10-28.
-- **Fait** : CP0 → CP6 + CP6b (simplification : 1 YAML, Justfile, plus de wandb). Validé
+- **Fait** : CP0 → CP6, CP6b (simplification : 1 YAML, Justfile, plus de wandb) et CP6c
+  (bonnes pratiques : CI, pre-commit, pyright, provenance, torch cu126, licence). Validé
   **uniquement sur données synthétiques**, en local.
 - **Prochain** : **CP7** (validation sur vraies dalles, accès au cluster SLURM requis).
   Sans accès au cluster : faire **CP9** (inférence sur dalle entière) sur le jeu toy.
@@ -21,7 +22,7 @@ Vérifier l'état en 2 minutes :
 uv tool install rust-just    # ou préfixer chaque commande par : uvx --from rust-just
 git submodule status         # sam_road 04b67c5 ; sam 6fdee8f
 just setup                   # idempotent
-just test                    # attendu : 25 passed + All checks passed
+just test                    # attendu : 26 passed, ruff OK, 17 files formatted, pyright 0 error
 just toy && just dev         # exit 0
 ```
 
@@ -33,7 +34,9 @@ just toy && just dev         # exit 0
 2. Le code amont `third_party/sam_road` n'est **jamais modifié** : sous-classes ou réécriture
    ciblée dans `src/edgerunner/`, accès par le shim `edgerunner/_sam_road.py`.
 3. Aucun commit ni push sans autorisation explicite de l'utilisateur.
-4. Fichiers < 700 lignes (sinon découper). Ruff, longueur de ligne 100. Tests CPU dans `tests/`.
+4. Fichiers < 700 lignes (sinon découper). Ruff (ligne 100) + `ruff format` + pyright standard.
+   Tests CPU dans `tests/`. `just test` doit passer avant tout commit : c'est ce que rejoue la CI,
+   et les hooks pre-commit formatent / vérifient chaque commit.
 5. Docs en français, concises. Réponses courtes à l'utilisateur ; débattre les choix structurants
    avec lui **avant** d'implémenter.
 6. Cluster : aucun calcul sur le nœud de login, tout passe par `sbatch`.
@@ -61,10 +64,13 @@ just toy && just dev         # exit 0
 | `src/edgerunner/data/dataset.py` | `IGNSamRoadDataset(root, folds, sam_cfg, …)`, `collate`, `make_loaders` |
 | `src/edgerunner/data/toy.py` | Jeu synthétique au même format que les vraies données |
 | `src/edgerunner/models/sam_road.py` | `SAMRoadModule(SAMRoad)` |
-| `src/edgerunner/train.py` | `@hydra.main` : construction explicite (pas de `_target_`), `build_loaders(cfg)`, ClearML optionnel |
+| `src/edgerunner/train.py` | `@hydra.main` : construction explicite (pas de `_target_`), `build_loaders(cfg)`, `provenance(data_root)`, ClearML optionnel |
 | `src/edgerunner/smoke.py` | Overlays PNG, stats des labels, débit du DataLoader |
 | `configs/train.yaml` | **La** config : `data_root`, `gsd`, `patch_size`, sections `data`, `model` (clés amont), `trainer` |
-| `Justfile` | `setup`, `toy`, `test`, `dev`, `train`, `smoke`, `cluster [train\|dev\|smoke]` |
+| `Justfile` | `setup`, `submodules`, `toy`, `test`, `fmt`, `dev`, `train`, `smoke`, `cluster [train\|dev\|smoke]` |
+| `.github/workflows/ci.yml` | CI : `just submodules`, `uv sync --locked`, `just test`, hooks pre-commit |
+| `.pre-commit-config.yaml` | hooks : YAML/TOML, fin de fichier, espaces, gros fichiers, ruff check + format (version de uv.lock) |
+| `LICENSE`, `CITATION.cff` | MIT ; citation du dépôt + SAM-Road + Segment Anything |
 | `sbatch/train_samroad.sh` | Copie sur le NVMe de chaque nœud (arborescence `data_root`), puis DDP 2 × 3 A40 ou smoke |
 
 ## 3. Contrats à ne pas casser
@@ -103,6 +109,11 @@ just toy && just dev         # exit 0
   11 YAML → 1, DataModule → `make_loaders`, `instantiate` → construction explicite, `data_root`
   unique, Justfile, smoke dans le package, mode `smoke` du sbatch, wandb retiré.
   *Preuve* : `just test` (25 passed), `just toy && just dev`, `just smoke data_root=data/toy`.
+- [x] **CP6c — Bonnes pratiques** : `.env` / `clearml.conf` ignorés ; `.python-version` 3.12 et
+  `uv sync --locked` ; torch cu126 (driver des A40 non vérifié pour CUDA 13) ; pre-commit +
+  `ruff format` ; pyright 0 erreur ; provenance des runs dans les hparams ; licence MIT +
+  CITATION.cff ; CI GitHub Actions. *Preuve* : `just test` (26 passed), badge CI vert, checkpoint
+  rechargé avec `load_from_checkpoint` et sa provenance.
 
 ## 5. Checkpoints à venir
 
@@ -202,6 +213,14 @@ just toy && just dev         # exit 0
   sbatch). Les clés absentes du YAML se surchargent avec `+clé=…` ; les autres avec `clé=…`.
 - Paramètres de `IGNSamRoadDataset` absents du YAML (`min_valid`, `roads_cache_size`,
   `native_gsd`) : passer `+data.min_valid=0.3`, `make_loaders` les transmet au dataset.
+- Ruff et pre-commit respectent le `.gitignore` : une règle non ancrée (`data/` au lieu de
+  `/data/`) masquait tout `src/edgerunner/data/` au lint. Toujours ancrer les règles à la racine.
+- torch est épinglé sur l'index PyTorch cu126 (`[tool.uv.sources]`). Si le driver des A40 est
+  ≥ 580 (`nvidia-smi` sur un nœud), on peut passer en cu130 ; sinon ne pas retirer cet index.
+- pyright ne comprend pas `rasterio.windows.Window(...)` (attrs ancienne syntaxe) : utiliser
+  `Window.from_slices(rows, cols)` (voir `IGNSamRoadDataset._window`).
+- `SAMRoadModule(..., provenance=...)` : la provenance est un hparam ; ne pas l'ajouter à
+  `self.hparams` après coup, sinon `load_from_checkpoint` reçoit un argument inconnu.
 - Proxy du cluster : ClearML a besoin de ses hôtes dans `no_proxy` ; NCCL a besoin de
   `NCCL_IB_DISABLE=1` et `NCCL_SOCKET_IFNAME=bond0` (déjà dans le sbatch).
 
@@ -211,3 +230,4 @@ just toy && just dev         # exit 0
 | --- | --- | --- | --- |
 | 2026-10-28 | CP0–CP6 | Claude (Opus) | Pipeline écrit et testé sur le toy. Dataset : 49 ms/échantillon à 1024 px (1 processus), 110 échantillons/s avec 4 workers. A2000 : 1.65 it/s en batch 1 à 1024 (16-mixed), OOM en batch 2. Repère (autres labels, DeH4R) : 67 échantillons/s depuis le NVMe contre 4 depuis CIFS avec 8 workers. |
 | 2026-10-28 | CP6b | Claude (Opus) | Simplification validée : 25 tests, `just dev`, mini-run (ckpt + TB), smoke toy 148 échantillons/s avec 4 workers. |
+| 2026-10-28 | CP6c | Claude (Opus) | Bonnes pratiques : CI, pre-commit, pyright, provenance, cu126, licence MIT. 6 erreurs ruff masquées par l'ancien `.gitignore` corrigées. |

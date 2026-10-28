@@ -1,5 +1,7 @@
 # EdgeRunner
 
+[![CI](https://github.com/speillet/EdgeRunner/actions/workflows/ci.yml/badge.svg)](https://github.com/speillet/EdgeRunner/actions/workflows/ci.yml)
+
 Entraînement de [SAM-Road](https://github.com/htcr/sam_road) (CVPRW 2024) sur les orthophotos IGN
 BD ORTHO (COG 0.20 m), avec des labels tirés de la BD TOPO **à la volée**. Le modèle prédit des
 masques (routes, carrefours) et la topologie locale (quels points du réseau sont reliés), d'où
@@ -11,7 +13,7 @@ l'on reconstruit un graphe routier. PyTorch Lightning + Hydra.
 
 ```bash
 uv tool install rust-just   # une fois (ou : uvx --from rust-just just <recette>)
-just setup                  # submodule sam_road, environnement Python, checkpoint SAM ViT-B
+just setup                  # submodule sam_road, env Python, hooks git, checkpoint SAM ViT-B
 just toy                    # jeu synthétique dans data/toy
 just dev                    # 2 batchs train + val sur le toy : vérifie que tout tourne
 ```
@@ -29,8 +31,11 @@ utile du COG et les routes de la dalle, et fabrique les labels de chaque patch a
 
 ```text
 EdgeRunner/
-├── Justfile                     [ER] une recette par action : setup, toy, test, dev, train, smoke, cluster
-├── pyproject.toml / uv.lock     [ER] paquet `edgerunner` et dépendances figées (uv)
+├── Justfile                     [ER] une recette par action : setup, toy, test, fmt, dev, train, smoke, cluster
+├── pyproject.toml / uv.lock     [ER] paquet `edgerunner`, dépendances figées (uv), config ruff et pyright
+├── .python-version              [ER] Python 3.12, le même partout (local, cluster, CI)
+├── .pre-commit-config.yaml      [ER] hooks avant chaque commit (ruff, format, YAML, gros fichiers)
+├── .github/workflows/ci.yml     [ER] CI : `just test` + hooks à chaque push et PR
 ├── configs/
 │   └── train.yaml               [ER] LA config (data_root, gsd, patch, data, model, trainer)
 ├── src/edgerunner/              [ER] tout le code propre au projet
@@ -43,7 +48,7 @@ EdgeRunner/
 │   │   └── toy.py                    générateur de données synthétiques au format réel
 │   ├── models/
 │   │   └── sam_road.py               SAMRoadModule : LightningModule hérité de SAMRoad
-│   ├── train.py                      point d'entrée Hydra (loaders, modèle, Trainer, ClearML)
+│   ├── train.py                      point d'entrée Hydra (loaders, modèle, Trainer, provenance, ClearML)
 │   └── smoke.py                      overlays PNG, stats des labels, débit du DataLoader
 ├── tests/                       [ER] tests CPU sur le jeu synthétique (pytest)
 ├── sbatch/train_samroad.sh      [ER] job SLURM : copie des données sur NVMe puis DDP 2 × 3 A40
@@ -56,6 +61,7 @@ EdgeRunner/
 │   ├── cityscale_metrics/, spacenet_metrics/  APLS / TOPO                          → plus tard (CP10)
 │   └── train.py, config/, utils.py, cityscale/, spacenet/   pipeline amont         → non utilisé
 ├── README.md, ROADMAP.md        [ER] usage ; feuille de route pour reprendre le travail
+├── LICENSE, CITATION.cff        [ER] licence MIT ; comment citer (et papiers SAM-Road, SAM)
 │
 │   non versionnés (.gitignore) :
 ├── checkpoints/                 poids SAM ViT-B de Meta (téléchargés par just setup)
@@ -137,9 +143,10 @@ Les distances sont écrites en mètres et converties par `${px:m,${gsd}}`. Passe
 
 | Recette | Effet |
 | --- | --- |
-| `just setup` | submodule (https), `uv sync`, checkpoint SAM ViT-B |
+| `just setup` | submodule (https), `uv sync --locked`, hooks pre-commit, checkpoint SAM ViT-B |
 | `just toy` | jeu synthétique dans `data/toy` |
-| `just test` | tests CPU + ruff |
+| `just test` | tests CPU, ruff, formatage, pyright : exactement ce que lance la CI |
+| `just fmt` | formate et corrige automatiquement le code |
 | `just dev [clé=valeur…]` | 2 batchs sur le toy à 0.8 m / 512 px (tient sur 12 Go) |
 | `just train data_root=/data [clé=valeur…]` | entraînement |
 | `just smoke data_root=/data` | overlays PNG, stats des labels, débit (`outputs/smoke`) |
@@ -167,11 +174,16 @@ outputs/<run_name>/<date>/
   .hydra/config.yaml      config complète du run, overrides inclus (interpolations ${…} non résolues)
   train.log               log texte
   tb/                     TensorBoard : losses, IoU, F1 topo, LR, images val/masks ;
-                          hparams.yaml = config SAM-Road résolue (rayons en pixels)
+                          hparams.yaml = config SAM-Road résolue (rayons en pixels) + provenance
   ckpt/                   3 meilleurs checkpoints (val_loss) + last.ckpt
 ```
 
 `uv run tensorboard --logdir outputs` pour suivre les courbes.
+
+**Provenance** : chaque checkpoint (et `hparams.yaml`, et ClearML) garde le commit du dépôt, un
+drapeau `dirty` (modifications non commitées), le commit de sam_road et une empreinte SHA-256 de
+`tiles.parquet` / `windows.parquet` : on sait toujours sur quel code et quel index un modèle a
+été entraîné.
 
 ## Tests
 
@@ -180,7 +192,17 @@ outputs/<run_name>/<date>/
 | `tests/test_labels.py` | carrefours et extrémités, rien au bord ni sur un pont, largeur du masque, rotation |
 | `tests/test_dataset.py` | filtres BD TOPO, format du batch, grille d'éval, GSD 0.4 vs 0.8, workers |
 | `tests/test_model.py` | losses finies, loss topo à 0 sans route, paliers de LR (CPU, faux checkpoint) |
-| `tests/test_config.py` | conversion mètres → pixels, loaders construits depuis la config |
+| `tests/test_config.py` | conversion mètres → pixels, loaders construits depuis la config, provenance |
+
+## Qualité du code
+
+- **Avant chaque commit** : hooks pre-commit (installés par `just setup`) qui formatent et
+  vérifient le code. Pour tout repasser : `uv run pre-commit run --all-files`.
+- **À chaque push / PR** : la CI GitHub rejoue `just test` et les hooks (badge en haut).
+- **Typage** : pyright en mode standard sur `src/`.
+- **Environnement reproductible** : Python 3.12 (`.python-version`), `uv sync --locked` partout,
+  torch en build CUDA 12.6 (compatible avec le driver des A40 ; CUDA 13 exigerait un driver ≥ 580).
+- **Secrets** : `.env` et `clearml.conf` sont ignorés par git (le dépôt est public).
 
 ## Limites connues
 
