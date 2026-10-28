@@ -16,6 +16,7 @@ import cv2
 import numpy as np
 from hydra import compose, initialize_config_dir
 
+from .data.dataset import IGNSamRoadDataset
 from .train import build_loaders
 
 CONFIGS = Path(__file__).resolve().parents[2] / "configs"
@@ -39,7 +40,7 @@ def overlay(item: dict[str, Any], path: Path, max_side: int = 1024) -> None:
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p = argparse.ArgumentParser(description="Dataset smoke test.")
     p.add_argument("--out", default="outputs/smoke")
     p.add_argument("--n", type=int, default=64, help="samples per split for the stats")
     p.add_argument("--overlays", type=int, default=8)
@@ -52,7 +53,9 @@ def main() -> None:
         cfg = compose("train", overrides=a.overrides)
     train_dl, val_dl = build_loaders(cfg)
 
-    for name, ds in (("train", train_dl.dataset), ("val", val_dl.dataset)):
+    for name, dl in (("train", train_dl), ("val", val_dl)):
+        ds = dl.dataset
+        assert isinstance(ds, IGNSamRoadDataset)
         n = min(a.n, len(ds))
         t0, empty, points, pos = time.time(), 0, [], []
         for i in range(n):

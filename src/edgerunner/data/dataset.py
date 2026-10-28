@@ -85,7 +85,7 @@ class IGNSamRoadDataset(Dataset):
         if not len(self.tiles):
             raise ValueError(f"no tile in folds {folds}")
         self.tile_pos = {t: i for i, t in enumerate(self.tiles["tile_id"])}
-        w = self.tiles["valid_frac"].to_numpy(float)
+        w = np.asarray(self.tiles["valid_frac"], dtype=float)
         self.tile_p = w / w.sum()
         self.patches = self._eval_patches(folds, max_patches) if mode == "eval" else []
 
@@ -105,7 +105,7 @@ class IGNSamRoadDataset(Dataset):
         )
         wins = wins[wins["fold"].astype(str).isin(folds) & wins["tile_id"].isin(self.tile_pos)]
         s, out = self.native, []
-        for tile_id, r0, c0, size in wins[["tile_id", "row_off", "col_off", "size"]].to_numpy():
+        for tile_id, r0, c0, size in np.asarray(wins[["tile_id", "row_off", "col_off", "size"]]):
             if size < s:
                 continue
             offs = np.linspace(0, size - s, ceil(size / s)).round().astype(int)
@@ -153,23 +153,25 @@ class IGNSamRoadDataset(Dataset):
         self._roads.move_to_end(tile.tile_id)
         return roads
 
+    def _window(self, r: int, c: int) -> Window:
+        s = self.native
+        return Window.from_slices((r, r + s), (c, c + s))
+
     def _valid_frac(self, tile: Any, r: int, c: int) -> float:
         """Share of non-nodata pixels (any band != 0), read from a coarse overview."""
-        ov = self._open(tile.uri).read(
-            (1, 2, 3), window=Window(c, r, self.native, self.native), out_shape=(3, 32, 32)
-        )
+        ov = self._open(tile.uri).read((1, 2, 3), window=self._window(r, c), out_shape=(3, 32, 32))
         return float(np.any(ov != 0, axis=0).mean())
 
     def _random_window(self) -> tuple[Any, int, int]:
         assert self._rng is not None
-        s = self.native
-        for _ in range(20):
+        s, tries = self.native, 0
+        while True:  # up to 20 draws to reach min_valid, else the last one
             tile = self.tiles.iloc[self._rng.choice(len(self.tiles), p=self.tile_p)]
             r = int(self._rng.integers(0, tile["height"] - s + 1))
             c = int(self._rng.integers(0, tile["width"] - s + 1))
-            if self._valid_frac(tile, r, c) >= self.min_valid:
-                break
-        return tile, r, c
+            tries += 1
+            if tries == 20 or self._valid_frac(tile, r, c) >= self.min_valid:
+                return tile, r, c
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
         self._check_process()
@@ -186,7 +188,7 @@ class IGNSamRoadDataset(Dataset):
         self._check_process()
         s, p = self.native, self.patch
         src = self._open(tile.uri)
-        win = Window(c, r, s, s)
+        win = self._window(r, c)
         rgb = src.read((1, 2, 3), window=win, out_shape=(3, p, p), resampling=Resampling.average)
         patch_tf = window_transform(win, src.transform) @ Affine.scale(s / p)
         lab = render_window(self._tile_roads(tile), ~patch_tf, p, self.gsd, self.labels)

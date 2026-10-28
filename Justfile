@@ -24,11 +24,12 @@ submodules:
     git -C third_party/sam_road config submodule.sam.url https://github.com/htcr/segment-anything-road.git
     git -C third_party/sam_road submodule update --init sam
 
-# unit tests + lint + format check (what the CI runs)
+# unit tests + lint + format check + types (what the CI runs)
 test:
     uv run pytest -q
     uv run ruff check src tests
     uv run ruff format --check src tests
+    uv run pyright
 
 # format and auto-fix the code
 fmt:

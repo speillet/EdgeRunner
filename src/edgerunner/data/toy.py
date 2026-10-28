@@ -171,7 +171,7 @@ def make_toy_dataset(
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p = argparse.ArgumentParser(description="Write the synthetic dataset.")
     p.add_argument("out")
     p.add_argument("--tiles", type=int, default=5)
     p.add_argument("--size", type=int, default=3072)

@@ -52,8 +52,6 @@ sam_dataset = _load("sam_road_dataset", "dataset.py")
 
 def sam_model() -> ModuleType:
     """`model.py` (torchvision, segment_anything): only loaded where needed."""
-    try:
-        import wandb  # noqa: F401
-    except ImportError:  # imported by model.py, used only by its validation viz (overridden)
+    if importlib.util.find_spec("wandb") is None:  # imported by model.py, only its viz uses it
         sys.modules["wandb"] = ModuleType("wandb")
     return _load("sam_road_model", "model.py")

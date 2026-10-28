@@ -58,7 +58,7 @@ def render_window(
     road = np.zeros((full, full), np.uint8)
     adj: dict[tuple[int, int], set[tuple[int, int]]] = {}
     for i in roads.tree.query(shapely.box(*rect)):
-        width = px(cfg.road_width_m or roads.width_m[i], gsd)
+        width = px(cfg.road_width_m or float(roads.width_m[i]), gsd)
         for part in shapely.get_parts(shapely.clip_by_rect(roads.geoms[i], *rect)):
             if part.geom_type != "LineString":
                 continue
