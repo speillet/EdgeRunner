@@ -36,7 +36,7 @@ if [ "$CLEARML" = 1 ]; then
   export no_proxy="$hosts${no_proxy:+,$no_proxy}" NO_PROXY="$hosts${NO_PROXY:+,$NO_PROXY}"
 fi
 
-uv sync --extra clearml --inexact
+uv sync --locked --extra clearml --inexact  # fails if uv.lock is stale: same versions on every node
 PY=$PWD/.venv/bin/python  # ranks call the venv directly: no concurrent uv runs
 [ -f "$DS/checkpoints/$CKPT" ] || {
   echo "missing $DS/checkpoints/$CKPT: https://dl.fbaipublicfiles.com/segment_anything/$CKPT"

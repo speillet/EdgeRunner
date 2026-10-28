@@ -12,7 +12,7 @@ setup:
     git submodule update --init third_party/sam_road
     git -C third_party/sam_road config submodule.sam.url https://github.com/htcr/segment-anything-road.git
     git -C third_party/sam_road submodule update --init sam
-    uv sync --extra clearml
+    uv sync --locked --extra clearml
     mkdir -p checkpoints
     test -f {{sam_ckpt}} || curl -L --fail -o {{sam_ckpt}} https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth
 
