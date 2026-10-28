@@ -1,0 +1,213 @@
+# ROADMAP — EdgeRunner (SAM-Road sur BD ORTHO IGN)
+
+> **Pour l'agent qui reprend (Codex, Claude, …)** : lire ce fichier en entier avant de coder.
+> À la fin de chaque checkpoint : cocher les cases, remplir le **Journal** (§7), mettre à jour
+> « Reprendre ici » (§0) et le `README.md` si l'usage change.
+
+## 0. Reprendre ici
+
+- **Dernière mise à jour** : 2026-10-28.
+- **Fait** : CP0 → CP6 + CP6b (simplification : 1 YAML, Justfile, plus de wandb). Validé
+  **uniquement sur données synthétiques**, en local.
+- **Prochain** : **CP7** (validation sur vraies dalles, accès au cluster SLURM requis).
+  Sans accès au cluster : faire **CP9** (inférence sur dalle entière) sur le jeu toy.
+- **Git** : branche `main` sur github.com/speillet/EdgeRunner, un commit par élément du dépôt
+  (`git log --reverse --oneline` se lit comme une visite guidée). Nouveaux commits : seulement
+  avec l'autorisation explicite de l'utilisateur.
+
+Vérifier l'état en 2 minutes :
+
+```bash
+uv tool install rust-just    # ou préfixer chaque commande par : uvx --from rust-just
+git submodule status         # sam_road 04b67c5 ; sam 6fdee8f
+just setup                   # idempotent
+just test                    # attendu : 25 passed + All checks passed
+just toy && just dev         # exit 0
+```
+
+## 1. Règles du projet (non négociables)
+
+1. `road_graph_extractor-main/` (gitignoré) sert **d'inspiration uniquement** : ni import, ni
+   dépendance, ni copier-coller. On consomme seulement les **fichiers de données** qu'il a produits
+   sur le cluster (index parquet, COG, GeoParquet BD TOPO).
+2. Le code amont `third_party/sam_road` n'est **jamais modifié** : sous-classes ou réécriture
+   ciblée dans `src/edgerunner/`, accès par le shim `edgerunner/_sam_road.py`.
+3. Aucun commit ni push sans autorisation explicite de l'utilisateur.
+4. Fichiers < 700 lignes (sinon découper). Ruff, longueur de ligne 100. Tests CPU dans `tests/`.
+5. Docs en français, concises. Réponses courtes à l'utilisateur ; débattre les choix structurants
+   avec lui **avant** d'implémenter.
+6. Cluster : aucun calcul sur le nœud de login, tout passe par `sbatch`.
+7. Décisions déjà tranchées avec l'utilisateur, à ne pas rouvrir sans lui :
+
+| Sujet | Décision |
+| --- | --- |
+| Résolution | GSD 0.40 m, patch 1024 px (= une fenêtre d'éval de 2048 px natifs) |
+| Distances | En mètres dans Hydra, converties par `${px:m,${gsd}}` |
+| Usage | Un seul `configs/train.yaml` (pas de groupes Hydra), un `data_root` à arborescence fixe, recettes `just` |
+| « Emprise de la dalle » | Lire seulement la fenêtre COG + les routes de l'emprise de la dalle (+ marge) |
+| Intégration sam_road | Submodule + sous-classe |
+| Loggers | TensorBoard (défaut) + ClearML (`clearml=true`, rang 0, capture TB). Pas wandb (module factice) |
+| Masque route | Étroit, 3 m fixe (largeur BD TOPO en option) ; keypoints = degré ≠ 2 |
+| Crops sans route | Gardés ; dénominateur de la loss topo clampé à 1 |
+
+## 2. Carte du code
+
+| Fichier | Rôle |
+| --- | --- |
+| `src/edgerunner/__init__.py` | `px` (m → px) et resolver OmegaConf `${px:…}`, enregistré à l'import |
+| `src/edgerunner/_sam_road.py` | Met `third_party/sam_road` (+ `/sam`) sur le `sys.path`, charge `dataset.py` / `model.py` sous des noms uniques, module `wandb` factice |
+| `src/edgerunner/data/roads.py` | BD TOPO par bbox via `pyarrow.dataset` (filtres : en service, non fictif, ni sentier / escalier / bac, ni tunnel) |
+| `src/edgerunner/data/labels.py` | `render_window` (masques + graphe sat2graph sur patch + marge), `WindowGraphLabeler` (`__init__` amont paramétré), `topo_labels` |
+| `src/edgerunner/data/dataset.py` | `IGNSamRoadDataset(root, folds, sam_cfg, …)`, `collate`, `make_loaders` |
+| `src/edgerunner/data/toy.py` | Jeu synthétique au même format que les vraies données |
+| `src/edgerunner/models/sam_road.py` | `SAMRoadModule(SAMRoad)` |
+| `src/edgerunner/train.py` | `@hydra.main` : construction explicite (pas de `_target_`), `build_loaders(cfg)`, ClearML optionnel |
+| `src/edgerunner/smoke.py` | Overlays PNG, stats des labels, débit du DataLoader |
+| `configs/train.yaml` | **La** config : `data_root`, `gsd`, `patch_size`, sections `data`, `model` (clés amont), `trainer` |
+| `Justfile` | `setup`, `toy`, `test`, `dev`, `train`, `smoke`, `cluster [train\|dev\|smoke]` |
+| `sbatch/train_samroad.sh` | Copie sur le NVMe de chaque nœud (arborescence `data_root`), puis DDP 2 × 3 A40 ou smoke |
+
+## 3. Contrats à ne pas casser
+
+- **Batch** (`collate`) : `rgb` uint8 [B,P,P,3] · `keypoint_mask`, `road_mask` uint8 {0,1} [B,P,P]
+  (le module les convertit en float dans `on_after_batch_transfer`) · `graph_points` float32
+  [B,N,2] en (x, y) dans le repère du patch, complété par des zéros · `pairs` int32 [B,S,Q,2] ·
+  `connected`, `valid` bool [B,S,Q] · `tile_id`, `row_off`, `col_off`, `rot` en listes.
+- **`data_root`** : `index/{tiles,windows}.parquet`, `cog/<uri>`, `bdtopo/troncon/dept=XX/`.
+- **Index** : `tiles.parquet` (`tile_id`, `uri` relatif à `data_root/cog`, `fold`, `width`, `height`,
+  `valid_frac`, `geometry` L93) ; `windows.parquet` (`tile_id`, `fold`, `row_off`, `col_off`,
+  `size`). Les folds sont des chaînes (`"0"`…`"4"`, `test`, `ext_test`).
+- **BD TOPO** : un dossier hive `dept=XX`, `geometry` en WKB, colonne struct `bbox`
+  {xmin, ymin, xmax, ymax}, attributs `nature`, `largeur_de_chaussee`, `etat_de_l_objet`,
+  `fictif`, `position_par_rapport_au_sol`.
+- **Rotation** : image et masques avec `np.rot90(a, rot, (0, 1))` ; les points sont tournés par
+  `sample_patch(…, rot_index=rot)` en amont (testé dans `test_points_follow_rotation`).
+
+## 4. Checkpoints faits
+
+- [x] **CP0 — Socle** : `pyproject.toml` (uv, hatchling), `.gitignore`, submodule sam_road
+  (URL https forcée pour le sous-module `sam`). *Preuve* : `git submodule status`.
+- [x] **CP1 — Shim sam_road + resolver** (`_sam_road.py`, resolver aujourd'hui dans `__init__.py`).
+- [x] **CP2 — Labels** (`roads.py`, `labels.py`). *Preuve* : `uv run pytest tests/test_labels.py`.
+- [x] **CP3 — Dataset + loaders + jeu toy**. *Preuve* : `uv run pytest tests/test_dataset.py`
+  (format du batch, filtres BD TOPO, grille d'éval, GSD 0.4 vs 0.8, pickle, workers fork /
+  forkserver).
+- [x] **CP4 — LightningModule**. *Preuve* : `uv run pytest tests/test_model.py` (checkpoint SAM
+  factice, loss topo = 0 sur un batch sans route).
+- [x] **CP5 — Hydra + entraînement local**. *Preuve* : `fast_dev_run` passe ; mini-run à 1024 px,
+  batch 1, loss 1.47 → 0.35 en 30 pas ; `outputs/<run>/ckpt/*.ckpt` et TensorBoard écrits
+  (scalaires + image `val/masks`).
+- [x] **CP6 — Outils cluster + docs** : `sbatch/train_samroad.sh` (syntaxe vérifiée par
+  `bash -n`, **jamais lancé**), smoke, `README.md`.
+- [x] **CP6b — Simplification** (demande de l'utilisateur : code minimaliste, facile à utiliser) :
+  11 YAML → 1, DataModule → `make_loaders`, `instantiate` → construction explicite, `data_root`
+  unique, Justfile, smoke dans le package, mode `smoke` du sbatch, wandb retiré.
+  *Preuve* : `just test` (25 passed), `just toy && just dev`, `just smoke data_root=data/toy`.
+
+## 5. Checkpoints à venir
+
+### CP7 — Validation sur vraies données (cluster) ⟵ PROCHAIN
+- **Prérequis** : accès SLURM. `INDEX_DIR` = dossier de `tiles.parquet` / `windows.parquet`
+  produit par `road_graph_extractor` (si le chemin est inconnu, le demander à l'utilisateur).
+  `$DS=/media/stores/cifs/store-DAI/pocs/datasets/road_graph_extractor`. Checkpoint SAM à poser
+  dans `$DS/checkpoints/sam_vit_b_01ec64.pth`.
+- **Étapes** :
+  1. Cloner EdgeRunner sur le cluster, initialiser le submodule (commandes du README).
+  2. `INDEX_DIR=… just cluster smoke` (1 nœud : copie NVMe puis `edgerunner.smoke`,
+     overlays dans `$OUT/smoke`).
+  3. Vérifier que `read_roads` lit le GeoParquet réel (écrit par DuckDB 1.5) : type de la colonne
+     `geometry` (binaire ou extension Parquet GEOMETRY, gérée par `_wkb`) et présence de `bbox`.
+  4. Faire relire les overlays par l'utilisateur : masques sur les routes (décalage BD TOPO d'environ
+     2.5 m attendu), keypoints aux carrefours, rien sur les ponts.
+  5. `INDEX_DIR=… just cluster dev` sur 2 nœuds.
+- **Fini quand** : overlays validés ; débit en échantillons/s mesuré depuis le NVMe et ≥ besoin
+  des GPU (3 × batch × it/s par nœud) ; taux de patchs sans route noté ; run DEV terminé avec le
+  code 0 ; tâche ClearML visible. Chiffres reportés au §7.
+
+### CP8 — Premier entraînement complet et réglages
+- Batch par GPU sur A40 (essayer 4 puis 8), LR, `max_epochs`, `samples_per_epoch`, et
+  `model.lr_milestones` (en **époques**, à aligner sur `max_epochs`).
+- Suivre `val_loss`, `road_iou`, `keypoint_iou`, `topo_f1`.
+- **Fini quand** : run complet sans NaN, courbes de validation qui descendent, meilleur
+  checkpoint enregistré, job id et métriques au §7.
+- **Piège** : si DDP signale des paramètres inutilisés (variantes `FREEZE_ENCODER`, LoRA,
+  `TOPONET_VERSION`), passer `trainer.strategy=ddp_find_unused_parameters_true`.
+
+### CP9 — Inférence sur dalle entière (faisable en local sur le toy)
+- **But** : `src/edgerunner/infer.py` (+ recette `just infer`, et une section `infer:` dans
+  `configs/train.yaml` plutôt qu'un 2e YAML) : checkpoint + dalle COG → graphe
+  géoréférencé L93 (GeoParquet de LineStrings) et masques en option.
+- **Ne pas importer** `third_party/sam_road/inferencer.py` : il appelle `parse_args()` à l'import
+  et importe des modules aux noms génériques (`model`, `dataset`, `utils`). Réécrire la boucle de
+  `infer_one_img` (lignes 61–235) dans `edgerunner`, en réutilisant `graph_utils` et
+  `graph_extraction.extract_graph_points`. `graph_extraction.py` importe `tcod` et
+  `scikit-image` : soit les ajouter aux dépendances, soit réécrire `extract_graph_points`
+  (petit : seuil + `nms_points`).
+- Découpage : blocs (ex. 4096 px à 0.4 m) avec recouvrement ≥ `NEIGHBOR_RADIUS` +
+  `SAMPLE_MARGIN` ; dans chaque bloc, patches de 1024 se chevauchant (le pas
+  `INFER_PATCHES_PER_EDGE` amont suppose une image de 2048 : le recalculer) ; fusion des masques
+  par moyenne ; points, puis topologie ; couture des blocs (dédoublonner les nœuds dans les
+  recouvrements).
+- Chargement : `SAMRoadModule.load_from_checkpoint(ckpt, cfg={**hparams_cfg, "SAM_CKPT_PATH": …})`,
+  car le `__init__` amont recharge les poids SAM.
+- **Fini quand** : sur le toy, le graphe superposé à la dalle suit la grille peinte ; test unitaire
+  de la couture ; temps par dalle mesuré.
+
+### CP10 — Métriques APLS / TOPO
+- Deux échelles (décision du projet d'origine) : fenêtres de 2048 px du fold `test` pour les
+  ablations ; dalle entière recousue pour les jalons.
+- GT : graphe BD TOPO (mêmes filtres que `read_roads`) ; test externe = annotations
+  `$DS/annotations` (polygones + `route_graph_skel` / `route_graph_snap`), fichiers seulement.
+- Outils : `third_party/sam_road/*_metrics` (APLS en Go, TOPO en Python) ou APLS en Python pur.
+  **Choix à débattre avec l'utilisateur.**
+
+### CP11 — Tirage pondéré par densité de routes (ablation)
+- Poids = `valid_frac × (ε + densité)`, densité en km de route par km² et par dalle, précalculée par
+  un script EdgeRunner dans un parquet à part (ne pas modifier les fichiers de road_graph_extractor).
+- Option `data.density_eps: null` (paramètre de `IGNSamRoadDataset`) pour désactiver. **Fini quand** : les stats smoke montrent moins
+  de patchs vides ; run d'ablation comparé à CP8.
+
+### CP12 — Pont passant exactement sur un nœud
+- Limite amont : `find_crossover_points` ignore les croisements en bout de segment. Avec
+  `position_par_rapport_au_sol > 0`, ajouter explicitement les intersections pont × route comme
+  croisements (paramètre supplémentaire de `WindowGraphLabeler`) et ne jamais fusionner les
+  nœuds pont / route arrondis au même pixel.
+- **Fini quand** : un test où le pont du toy passe par un carrefour n'a ni keypoint ni paire
+  connectée à travers le croisement.
+
+### CP13 — (Optionnel) Partir des checkpoints sam_road cityscale
+- HF `congrui/sam_road`, entraînés à 1 m/px avec des patches de 512. Les offsets de TopoNet sont en
+  pixels bruts : à 0.4 m ils sont 2.5 fois plus grands. Mettre les offsets à l'échelle ou
+  ré-entraîner TopoNet. Priorité basse.
+
+## 6. Pièges connus
+
+- Le sous-module `sam` de sam_road est déclaré en SSH : forcer l'URL https après **chaque** clone
+  (config git locale, non versionnée).
+- `sam/segment_anything/predictor.py` importe `segment_anything` en absolu, donc les deux
+  dossiers doivent être sur le `sys.path` (déjà fait dans `_sam_road.py`).
+- `model.py` amont importe `wandb` au chargement : `sam_model()` injecte un module vide si wandb
+  est absent (seule la viz amont, surchargée, l'utilise). Ne pas appeler le `validation_step` amont.
+- affine ≥ 3 : utiliser `@` pour composer les transformations **et** pour les appliquer à des points.
+- Workers en `forkserver` par défaut (`fork` est risqué une fois des threads pyarrow / GDAL
+  lancés). Conséquences : `collate` au niveau du module, et le dataset se picke sans handles
+  ouverts (`__getstate__`).
+- RNG : `_check_process` réinitialise par processus (`torch.initial_seed()` + `RANK`) ;
+  `sample_patch` amont tire dans `np.random` global, donc l'éval réinitialise la graine par index.
+- Mémoire : sur l'A2000 locale (12 Go), seul 1024 px en batch 1 passe (avec
+  `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`). Pour le dev, utiliser 0.8 m / 512.
+- Toy : le pont ne doit pas passer par les nœuds de la grille (cf. CP12).
+- Avertissement Lightning « on_after_batch_transfer … LightningDataModule » : sans conséquence.
+- DDP sous srun : chaque rang lance Hydra, donc fixer `hydra.run.dir=$OUT` (déjà fait dans le
+  sbatch). Les clés absentes du YAML se surchargent avec `+clé=…` ; les autres avec `clé=…`.
+- Paramètres de `IGNSamRoadDataset` absents du YAML (`min_valid`, `roads_cache_size`,
+  `native_gsd`) : passer `+data.min_valid=0.3`, `make_loaders` les transmet au dataset.
+- Proxy du cluster : ClearML a besoin de ses hôtes dans `no_proxy` ; NCCL a besoin de
+  `NCCL_IB_DISABLE=1` et `NCCL_SOCKET_IFNAME=bond0` (déjà dans le sbatch).
+
+## 7. Journal (ajouter en bas, ne pas réécrire)
+
+| Date | CP | Qui | Résumé / mesures |
+| --- | --- | --- | --- |
+| 2026-10-28 | CP0–CP6 | Claude (Opus) | Pipeline écrit et testé sur le toy. Dataset : 49 ms/échantillon à 1024 px (1 processus), 110 échantillons/s avec 4 workers. A2000 : 1.65 it/s en batch 1 à 1024 (16-mixed), OOM en batch 2. Repère (autres labels, DeH4R) : 67 échantillons/s depuis le NVMe contre 4 depuis CIFS avec 8 workers. |
+| 2026-10-28 | CP6b | Claude (Opus) | Simplification validée : 25 tests, `just dev`, mini-run (ckpt + TB), smoke toy 148 échantillons/s avec 4 workers. |
