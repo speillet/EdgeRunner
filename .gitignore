@@ -9,3 +9,7 @@ __pycache__/
 /lightning_logs/
 .pytest_cache/
 .ruff_cache/
+# secrets (ClearML keys, PostGIS credentials): never in this public repo
+.env
+.env.*
+clearml.conf
