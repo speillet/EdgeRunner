@@ -34,8 +34,13 @@ class SAMRoadModule(SAMRoad):
         lr_gamma: float = 0.1,
         viz_n: int = 4,
         viz_size: int = 256,
+        provenance: Mapping[str, Any] | None = None,
     ):
-        """`cfg`: upstream SAM-Road config keys (SAM_VERSION, SAM_CKPT_PATH, PATCH_SIZE, ...)."""
+        """`cfg`: upstream SAM-Road config keys (SAM_VERSION, SAM_CKPT_PATH, PATCH_SIZE, ...).
+
+        `provenance` (code and index versions, see `train.provenance`) is only stored in the
+        hyper-parameters, hence in every checkpoint and in tb/hparams.yaml.
+        """
         with contextlib.redirect_stdout(io.StringIO()):  # upstream pprints every parameter name
             super().__init__(addict.Dict(cfg))
         n_fresh = sum(1 for k, _ in self.named_parameters() if k not in self.matched_param_names)

@@ -7,7 +7,7 @@ from pathlib import Path
 from hydra import compose, initialize_config_dir
 from omegaconf import OmegaConf
 
-from edgerunner.train import build_loaders
+from edgerunner.train import build_loaders, provenance
 
 CONFIGS = str(Path(__file__).resolve().parents[1] / "configs")
 
@@ -37,3 +37,9 @@ def test_loaders_from_config(toy: Path) -> None:
     batch = next(iter(train_dl))
     assert batch["rgb"].shape == (2, 256, 256, 3) and batch["pairs"].shape[1] == 16
     assert len(val_dl.dataset) == 2
+
+
+def test_provenance(toy: Path) -> None:
+    p = provenance(str(toy))
+    assert len(p["commit"]) == len(p["sam_road"]) == 40  # this repo and its submodule
+    assert isinstance(p["dirty"], bool) and len(p["tiles_sha256"]) == 16

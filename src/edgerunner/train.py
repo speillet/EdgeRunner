@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import subprocess
+from pathlib import Path
 from typing import Any, cast
 
 import hydra
@@ -15,6 +18,8 @@ from torch.utils.data import DataLoader
 
 from .data.dataset import make_loaders
 
+REPO = Path(__file__).resolve().parents[2]
+
 
 def plain(node: Any) -> dict[str, Any]:
     """Config node → resolved plain dict."""
@@ -27,6 +32,27 @@ def build_loaders(cfg: DictConfig) -> tuple[DataLoader, DataLoader]:
     )
 
 
+def provenance(data_root: str) -> dict[str, Any]:
+    """Versions a run depends on: git commits (repo, sam_road) and hashes of the data index."""
+
+    def git(*args: str) -> str:
+        try:
+            run = subprocess.run(["git", "-C", str(REPO), *args], capture_output=True, text=True)
+        except OSError:  # no git on this machine
+            return ""
+        return run.stdout.strip()
+
+    out: dict[str, Any] = {
+        "commit": git("rev-parse", "HEAD"),
+        "dirty": bool(git("status", "--porcelain", "--untracked-files=no")),
+        "sam_road": git("-C", "third_party/sam_road", "rev-parse", "HEAD"),
+    }
+    for name in ("tiles", "windows"):
+        index = Path(data_root, "index", f"{name}.parquet").read_bytes()
+        out[f"{name}_sha256"] = hashlib.sha256(index).hexdigest()[:16]
+    return out
+
+
 @hydra.main(config_path="../../configs", config_name="train", version_base="1.3")
 def main(cfg: DictConfig) -> None:
     from .models.sam_road import SAMRoadModule
@@ -36,7 +62,11 @@ def main(cfg: DictConfig) -> None:
     torch.set_float32_matmul_precision("high")
     out = HydraConfig.get().runtime.output_dir
     train_dl, val_dl = build_loaders(cfg)
-    model = SAMRoadModule(plain(cfg.model), lr_milestones=list(cfg.lr_milestones))
+    model = SAMRoadModule(
+        plain(cfg.model),
+        lr_milestones=list(cfg.lr_milestones),
+        provenance=provenance(cfg.data_root),
+    )
     trainer = pl.Trainer(
         **plain(cfg.trainer),
         logger=TensorBoardLogger(out, name="tb", version="", default_hp_metric=False),
