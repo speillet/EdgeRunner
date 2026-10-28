@@ -7,12 +7,10 @@ sam_ckpt := "checkpoints/sam_vit_b_01ec64.pth"
 default:
     @just --list
 
-# submodules (https), Python env, SAM ViT-B checkpoint
-setup:
-    git submodule update --init third_party/sam_road
-    git -C third_party/sam_road config submodule.sam.url https://github.com/htcr/segment-anything-road.git
-    git -C third_party/sam_road submodule update --init sam
+# submodules (https), Python env, git hooks, SAM ViT-B checkpoint
+setup: submodules
     uv sync --locked --extra clearml
+    uv run pre-commit install
     mkdir -p checkpoints
     test -f {{sam_ckpt}} || curl -L --fail -o {{sam_ckpt}} https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth
 
@@ -20,10 +18,22 @@ setup:
 toy:
     uv run python -m edgerunner.data.toy data/toy
 
-# unit tests + lint
+# sam_road + its `sam` submodule (declared over SSH upstream: forced to https)
+submodules:
+    git submodule update --init third_party/sam_road
+    git -C third_party/sam_road config submodule.sam.url https://github.com/htcr/segment-anything-road.git
+    git -C third_party/sam_road submodule update --init sam
+
+# unit tests + lint + format check (what the CI runs)
 test:
     uv run pytest -q
     uv run ruff check src tests
+    uv run ruff format --check src tests
+
+# format and auto-fix the code
+fmt:
+    uv run ruff format src tests
+    uv run ruff check --fix src tests
 
 # 2 train + val batches on the toy set, 0.8 m / 512 px (fits a 12 GB GPU)
 dev *args:

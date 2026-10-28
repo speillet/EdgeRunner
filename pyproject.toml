@@ -31,7 +31,11 @@ dependencies = [
 clearml = ["clearml>=1.16"]
 
 [dependency-groups]
-dev = ["pytest>=8.0", "ruff>=0.5"]
+dev = [
+    "pre-commit>=4.6.2",
+    "pytest>=8.0",
+    "ruff>=0.5",
+]
 
 [build-system]
 requires = ["hatchling"]
