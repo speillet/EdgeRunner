@@ -62,11 +62,16 @@ def main() -> None:
             points.append(item["graph_points"].shape[0] if v.any() else 0)
             pos.append(item["connected"][v].float().mean().item() if v.any() else np.nan)
             if i < a.overlays:
-                overlay(item, out / f"{name}_{i}_{item['tile_id']}_{item['row_off']}_"
-                                    f"{item['col_off']}_r{item['rot']}.png")
-        print(f"{name}: {(time.time() - t0) / max(n, 1) * 1e3:.0f} ms/sample (1 process), "
-              f"{empty}/{n} patches without road, {np.mean(points):.0f} graph points/patch, "
-              f"{np.nanmean(pos):.2f} of valid pairs connected")
+                overlay(
+                    item,
+                    out / f"{name}_{i}_{item['tile_id']}_{item['row_off']}_"
+                    f"{item['col_off']}_r{item['rot']}.png",
+                )
+        print(
+            f"{name}: {(time.time() - t0) / max(n, 1) * 1e3:.0f} ms/sample (1 process), "
+            f"{empty}/{n} patches without road, {np.mean(points):.0f} graph points/patch, "
+            f"{np.nanmean(pos):.2f} of valid pairs connected"
+        )
 
     if a.batches:
         it = iter(train_dl)
@@ -75,8 +80,10 @@ def main() -> None:
         for _ in range(a.batches):
             next(it)
         rate = a.batches * cfg.data.batch_size / (time.time() - t0)
-        print(f"TIMING: {rate:.1f} samples/s, {cfg.data.num_workers} workers, "
-              f"data_root {cfg.data_root}")
+        print(
+            f"TIMING: {rate:.1f} samples/s, {cfg.data.num_workers} workers, "
+            f"data_root {cfg.data_root}"
+        )
     print(f"overlays in {out}")
 
 

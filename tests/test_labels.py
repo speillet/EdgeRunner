@@ -14,8 +14,13 @@ from edgerunner.data.roads import Roads
 GSD, P = 0.4, 256
 INV = ~(Affine.translation(1000, 2000) @ Affine.scale(GSD, -GSD))  # patch (0, 0) at x=1000 y=2000
 CFG = LabelConfig()
-SAM = addict.Dict(PATCH_SIZE=P, TOPO_SAMPLE_NUM=64, ROAD_NMS_RADIUS=40, NEIGHBOR_RADIUS=160,
-                  MAX_NEIGHBOR_QUERIES=16)
+SAM = addict.Dict(
+    PATCH_SIZE=P,
+    TOPO_SAMPLE_NUM=64,
+    ROAD_NMS_RADIUS=40,
+    NEIGHBOR_RADIUS=160,
+    MAX_NEIGHBOR_QUERIES=16,
+)
 
 
 def w(r: float, c: float) -> tuple[float, float]:
@@ -54,8 +59,9 @@ def test_real_width_option() -> None:
 
 
 def test_bridge_is_a_crossover_not_a_junction() -> None:
-    lab = render_window(roads([(128, -600), (128, 900)], [(-600, 128), (900, 128)]),
-                        INV, P, GSD, CFG)
+    lab = render_window(
+        roads([(128, -600), (128, 900)], [(-600, 128), (900, 128)]), INV, P, GSD, CFG
+    )
     assert lab.keypoint_mask[118:139, 118:139].max() == 0
     gen = WindowGraphLabeler(SAM, lab.graph, 10, 10, 80)
     m = lab.margin
@@ -65,8 +71,9 @@ def test_bridge_is_a_crossover_not_a_junction() -> None:
 
 
 def test_parallel_roads_are_never_connected() -> None:
-    lab = render_window(roads([(100, -600), (100, 900)], [(150, -600), (150, 900)]),
-                        INV, P, GSD, CFG)
+    lab = render_window(
+        roads([(100, -600), (100, 900)], [(150, -600), (150, 900)]), INV, P, GSD, CFG
+    )
     np.random.seed(0)
     pts, samples = topo_labels(SAM, lab, P, GSD, CFG)
     n_conn = 0

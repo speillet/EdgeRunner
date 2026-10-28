@@ -20,8 +20,15 @@ def module(tmp_path_factory: pytest.TempPathFactory):  # noqa: ANN201
 
     ckpt = tmp_path_factory.mktemp("sam") / "stub.pth"
     torch.save({"image_encoder.pos_embed": torch.zeros(1, 64, 64, 768)}, ckpt)
-    cfg = dict(sam_cfg(256, 0.4), SAM_VERSION="vit_b", SAM_CKPT_PATH=str(ckpt), PATCH_SIZE=256,
-               BASE_LR=1e-3, ENCODER_LR_FACTOR=0.1, TOPONET_VERSION="normal")
+    cfg = dict(
+        sam_cfg(256, 0.4),
+        SAM_VERSION="vit_b",
+        SAM_CKPT_PATH=str(ckpt),
+        PATCH_SIZE=256,
+        BASE_LR=1e-3,
+        ENCODER_LR_FACTOR=0.1,
+        TOPONET_VERSION="normal",
+    )
     return SAMRoadModule(cfg, lr_milestones=[3, 6])
 
 

@@ -66,9 +66,12 @@ def read_roads(vector_uri: str, bounds: tuple[float, float, float, float]) -> Ro
 
     xmin, ymin, xmax, ymax = bounds
     flt = (
-        (pc.field("bbox", "xmax") >= xmin) & (pc.field("bbox", "xmin") <= xmax)
-        & (pc.field("bbox", "ymax") >= ymin) & (pc.field("bbox", "ymin") <= ymax)
-        & (pc.field("etat_de_l_objet") == "En service") & (pc.field("fictif") == False)  # noqa: E712
+        (pc.field("bbox", "xmax") >= xmin)
+        & (pc.field("bbox", "xmin") <= xmax)
+        & (pc.field("bbox", "ymax") >= ymin)
+        & (pc.field("bbox", "ymin") <= ymax)
+        & (pc.field("etat_de_l_objet") == "En service")
+        & (pc.field("fictif") == False)  # noqa: E712
         & ~pc.field("nature").isin(list(EXCLUDED_NATURES))
     )
     tb = _dataset(vector_uri).to_table(columns=COLUMNS, filter=flt)
@@ -76,7 +79,8 @@ def read_roads(vector_uri: str, bounds: tuple[float, float, float, float]) -> Ro
     keep = np.array([not str(p or "0").startswith("-") for p in pos], bool)  # tunnels
     geoms = _wkb(tb["geometry"])[keep]
     natures = np.array(tb["nature"].to_pylist(), dtype=object)[keep]
-    w = np.array([np.nan if v is None else v for v in tb["largeur_de_chaussee"].to_pylist()],
-                 float)[keep]
+    w = np.array(
+        [np.nan if v is None else v for v in tb["largeur_de_chaussee"].to_pylist()], float
+    )[keep]
     default = np.array([DEFAULT_WIDTH_M.get(n, FALLBACK_WIDTH_M) for n in natures])
     return Roads.from_geoms(geoms, np.where(np.isfinite(w) & (w > 0), w, default))

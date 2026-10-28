@@ -18,14 +18,21 @@ from edgerunner.data.toy import X0, Y_TOP
 
 def sam_cfg(patch: int, gsd: float) -> dict[str, Any]:
     px = lambda m: round(m / gsd)  # noqa: E731
-    return {"PATCH_SIZE": patch, "TOPO_SAMPLE_NUM": 32, "ROAD_NMS_RADIUS": px(16),
-            "NEIGHBOR_RADIUS": px(64), "MAX_NEIGHBOR_QUERIES": 16}
+    return {
+        "PATCH_SIZE": patch,
+        "TOPO_SAMPLE_NUM": 32,
+        "ROAD_NMS_RADIUS": px(16),
+        "NEIGHBOR_RADIUS": px(64),
+        "MAX_NEIGHBOR_QUERIES": 16,
+    }
 
 
-def make(toy: Path, folds: list[str], mode: str = "train", patch: int = 256, gsd: float = 0.4,
-         **kw: Any) -> IGNSamRoadDataset:
-    return IGNSamRoadDataset(toy, folds, sam_cfg(patch, gsd), mode=mode, gsd=gsd,
-                             samples_per_epoch=8, **kw)
+def make(
+    toy: Path, folds: list[str], mode: str = "train", patch: int = 256, gsd: float = 0.4, **kw: Any
+) -> IGNSamRoadDataset:
+    return IGNSamRoadDataset(
+        toy, folds, sam_cfg(patch, gsd), mode=mode, gsd=gsd, samples_per_epoch=8, **kw
+    )
 
 
 def test_read_roads_filters(toy: Path) -> None:
@@ -95,8 +102,9 @@ def test_pickles_without_handles(toy: Path) -> None:
 
 
 def test_collate_pads_points() -> None:
-    items = [{"graph_points": torch.ones(n, 2), "rgb": torch.zeros(2, 2), "tile_id": "t"}
-             for n in (3, 5)]
+    items = [
+        {"graph_points": torch.ones(n, 2), "rgb": torch.zeros(2, 2), "tile_id": "t"} for n in (3, 5)
+    ]
     b = collate(items)
     assert b["graph_points"].shape == (2, 5, 2) and b["graph_points"][0, 3:].abs().sum() == 0
     assert b["rgb"].shape == (2, 2, 2) and b["tile_id"] == ["t", "t"]
@@ -105,8 +113,9 @@ def test_collate_pads_points() -> None:
 @pytest.mark.parametrize("ctx", ["fork", "forkserver"])
 def test_workers(toy: Path, ctx: str) -> None:
     ds = make(toy, ["0", "1"])
-    dl = DataLoader(ds, batch_size=2, num_workers=2, collate_fn=collate,
-                    multiprocessing_context=ctx)
+    dl = DataLoader(
+        ds, batch_size=2, num_workers=2, collate_fn=collate, multiprocessing_context=ctx
+    )
     batches = list(dl)
     assert len(batches) == 4 and batches[0]["rgb"].shape == (2, 256, 256, 3)
     offs = {(b["tile_id"][i], b["row_off"][i], b["col_off"][i]) for b in batches for i in range(2)}

@@ -25,8 +25,14 @@ def test_metres_follow_gsd() -> None:
 
 
 def test_loaders_from_config(toy: Path) -> None:
-    c = cfg(f"data_root={toy}", "patch_size=256", "data.num_workers=0", "data.batch_size=2",
-            "data.val_max_patches=2", "model.TOPO_SAMPLE_NUM=16")
+    c = cfg(
+        f"data_root={toy}",
+        "patch_size=256",
+        "data.num_workers=0",
+        "data.batch_size=2",
+        "data.val_max_patches=2",
+        "model.TOPO_SAMPLE_NUM=16",
+    )
     train_dl, val_dl = build_loaders(c)
     batch = next(iter(train_dl))
     assert batch["rgb"].shape == (2, 256, 256, 3) and batch["pairs"].shape[1] == 16

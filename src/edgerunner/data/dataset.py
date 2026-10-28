@@ -1,4 +1,4 @@
-"""On-the-fly IGN dataset for SAM-Road: one COG window + the roads of its tile, nothing materialised.
+"""On-the-fly IGN dataset for SAM-Road: a COG window + the roads of its tile, nothing stored.
 
 Data root layout: `index/{tiles,windows}.parquet`, `cog/<uri>`, `bdtopo/troncon/dept=XX/`.
 Pixels are read from the COG by window at the run GSD (GDAL serves the matching overview). Roads
@@ -45,11 +45,21 @@ class IGNSamRoadDataset(Dataset):
     NEIGHBOR_RADIUS, MAX_NEIGHBOR_QUERIES in pixels at `gsd`).
     """
 
-    def __init__(self, root: str | Path, folds: Sequence[str | int], sam_cfg: Mapping[str, Any],
-                 labels: Mapping[str, Any] | None = None, mode: str = "train", gsd: float = 0.4,
-                 samples_per_epoch: int = 20_000, max_patches: int | None = None,
-                 min_valid: float = 0.5, roads_cache_size: int = 64, native_gsd: float = 0.2,
-                 seed: int = 0):
+    def __init__(
+        self,
+        root: str | Path,
+        folds: Sequence[str | int],
+        sam_cfg: Mapping[str, Any],
+        labels: Mapping[str, Any] | None = None,
+        mode: str = "train",
+        gsd: float = 0.4,
+        samples_per_epoch: int = 20_000,
+        max_patches: int | None = None,
+        min_valid: float = 0.5,
+        roads_cache_size: int = 64,
+        native_gsd: float = 0.2,
+        seed: int = 0,
+    ):
         import geopandas as gpd
 
         assert mode in ("train", "eval")
@@ -84,12 +94,15 @@ class IGNSamRoadDataset(Dataset):
         self._roads: OrderedDict[str, Roads] = OrderedDict()
         self._rng: np.random.Generator | None = None
 
-    def _eval_patches(self, folds: list[str],
-                      max_patches: int | None) -> list[tuple[str, int, int]]:
+    def _eval_patches(
+        self, folds: list[str], max_patches: int | None
+    ) -> list[tuple[str, int, int]]:
         import pandas as pd
 
-        wins = pd.read_parquet(f"{self.root}/index/windows.parquet",
-                               columns=["tile_id", "fold", "row_off", "col_off", "size"])
+        wins = pd.read_parquet(
+            f"{self.root}/index/windows.parquet",
+            columns=["tile_id", "fold", "row_off", "col_off", "size"],
+        )
         wins = wins[wins["fold"].astype(str).isin(folds) & wins["tile_id"].isin(self.tile_pos)]
         s, out = self.native, []
         for tile_id, r0, c0, size in wins[["tile_id", "row_off", "col_off", "size"]].to_numpy():
@@ -131,8 +144,9 @@ class IGNSamRoadDataset(Dataset):
         if roads is None:
             pad = (px(self.labels.margin_m, self.gsd) + 1) * self.gsd
             x0, y0, x1, y1 = tile.geometry.bounds
-            roads = read_roads(f"{self.root}/bdtopo/troncon",
-                               (x0 - pad, y0 - pad, x1 + pad, y1 + pad))
+            roads = read_roads(
+                f"{self.root}/bdtopo/troncon", (x0 - pad, y0 - pad, x1 + pad, y1 + pad)
+            )
             self._roads[tile.tile_id] = roads
             if len(self._roads) > self.roads_cache_size:
                 self._roads.popitem(last=False)
@@ -141,8 +155,9 @@ class IGNSamRoadDataset(Dataset):
 
     def _valid_frac(self, tile: Any, r: int, c: int) -> float:
         """Share of non-nodata pixels (any band != 0), read from a coarse overview."""
-        ov = self._open(tile.uri).read((1, 2, 3), window=Window(c, r, self.native, self.native),
-                                       out_shape=(3, 32, 32))
+        ov = self._open(tile.uri).read(
+            (1, 2, 3), window=Window(c, r, self.native, self.native), out_shape=(3, 32, 32)
+        )
         return float(np.any(ov != 0, axis=0).mean())
 
     def _random_window(self) -> tuple[Any, int, int]:
@@ -177,8 +192,10 @@ class IGNSamRoadDataset(Dataset):
         lab = render_window(self._tile_roads(tile), ~patch_tf, p, self.gsd, self.labels)
         points, samples = topo_labels(self.sam_cfg, lab, p, self.gsd, self.labels, rot)
         pairs, connected, valid = (np.asarray(x) for x in zip(*samples, strict=True))
-        rgb, road, kp = (np.ascontiguousarray(np.rot90(a, rot, (0, 1)))
-                         for a in (np.moveaxis(rgb, 0, -1), lab.road_mask, lab.keypoint_mask))
+        rgb, road, kp = (
+            np.ascontiguousarray(np.rot90(a, rot, (0, 1)))
+            for a in (np.moveaxis(rgb, 0, -1), lab.road_mask, lab.keypoint_mask)
+        )
         return {
             "rgb": torch.from_numpy(rgb),  # uint8 [P, P, 3], cast by the module on the GPU
             "keypoint_mask": torch.from_numpy(kp),  # uint8 {0, 1} [P, P]
@@ -187,7 +204,10 @@ class IGNSamRoadDataset(Dataset):
             "pairs": torch.as_tensor(pairs, dtype=torch.int32),  # [S, Q, 2]
             "connected": torch.as_tensor(connected, dtype=torch.bool),  # [S, Q]
             "valid": torch.as_tensor(valid, dtype=torch.bool),  # [S, Q]
-            "tile_id": str(tile.tile_id), "row_off": r, "col_off": c, "rot": rot,
+            "tile_id": str(tile.tile_id),
+            "row_off": r,
+            "col_off": c,
+            "rot": rot,
         }
 
 
@@ -209,22 +229,34 @@ def collate(batch: list[dict[str, Any]]) -> dict[str, Any]:
     return out
 
 
-def make_loaders(root: str | Path, sam_cfg: Mapping[str, Any], train_folds: Sequence[str],
-                 val_folds: Sequence[str], batch_size: int = 4, num_workers: int = 8,
-                 samples_per_epoch: int = 20_000, val_max_patches: int | None = 1000,
-                 multiprocessing_context: str = "forkserver", **dataset_kw: Any,
-                 ) -> tuple[DataLoader, DataLoader]:
+def make_loaders(
+    root: str | Path,
+    sam_cfg: Mapping[str, Any],
+    train_folds: Sequence[str],
+    val_folds: Sequence[str],
+    batch_size: int = 4,
+    num_workers: int = 8,
+    samples_per_epoch: int = 20_000,
+    val_max_patches: int | None = 1000,
+    multiprocessing_context: str = "forkserver",
+    **dataset_kw: Any,
+) -> tuple[DataLoader, DataLoader]:
     """Train loader (random windows of `train_folds`) and val loader (eval windows of `val_folds`).
 
     forkserver by default: forking once pyarrow / GDAL threads run can deadlock the workers.
     """
     common = {"root": root, "sam_cfg": sam_cfg, **dataset_kw}
-    train = IGNSamRoadDataset(folds=train_folds, mode="train",
-                              samples_per_epoch=samples_per_epoch, **common)
+    train = IGNSamRoadDataset(
+        folds=train_folds, mode="train", samples_per_epoch=samples_per_epoch, **common
+    )
     val = IGNSamRoadDataset(folds=val_folds, mode="eval", max_patches=val_max_patches, **common)
-    kw: dict[str, Any] = {"batch_size": batch_size, "num_workers": num_workers,
-                          "collate_fn": collate, "pin_memory": True,
-                          "persistent_workers": num_workers > 0}
+    kw: dict[str, Any] = {
+        "batch_size": batch_size,
+        "num_workers": num_workers,
+        "collate_fn": collate,
+        "pin_memory": True,
+        "persistent_workers": num_workers > 0,
+    }
     if num_workers:
         kw["multiprocessing_context"] = multiprocessing_context
     return DataLoader(train, drop_last=True, **kw), DataLoader(val, **kw)

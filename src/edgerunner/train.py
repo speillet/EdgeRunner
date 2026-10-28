@@ -32,20 +32,31 @@ def main(cfg: DictConfig) -> None:
     if cfg.clearml and rank_zero_only.rank == 0:  # mirrors the TensorBoard logs
         from clearml import Task
 
-        task = Task.init(project_name=cfg.clearml_project, task_name=cfg.run_name,
-                         auto_connect_frameworks={"pytorch": False, "tensorboard": True},
-                         reuse_last_task_id=False)
+        task = Task.init(
+            project_name=cfg.clearml_project,
+            task_name=cfg.run_name,
+            auto_connect_frameworks={"pytorch": False, "tensorboard": True},
+            reuse_last_task_id=False,
+        )
         task.connect(OmegaConf.to_container(cfg, resolve=True), name="hydra")
 
     train_dl, val_dl = build_loaders(cfg)
-    model = SAMRoadModule(OmegaConf.to_container(cfg.model, resolve=True),
-                          lr_milestones=list(cfg.lr_milestones))
+    model = SAMRoadModule(
+        OmegaConf.to_container(cfg.model, resolve=True), lr_milestones=list(cfg.lr_milestones)
+    )
     trainer = pl.Trainer(
         **OmegaConf.to_container(cfg.trainer, resolve=True),
         logger=TensorBoardLogger(out, name="tb", version="", default_hp_metric=False),
-        callbacks=[ModelCheckpoint(f"{out}/ckpt", "{epoch:02d}-{val_loss:.4f}", monitor="val_loss",
-                                   save_top_k=3, save_last=True),
-                   LearningRateMonitor("step")],
+        callbacks=[
+            ModelCheckpoint(
+                f"{out}/ckpt",
+                "{epoch:02d}-{val_loss:.4f}",
+                monitor="val_loss",
+                save_top_k=3,
+                save_last=True,
+            ),
+            LearningRateMonitor("step"),
+        ],
     )
     trainer.fit(model, train_dl, val_dl, ckpt_path=cfg.ckpt_path)
 

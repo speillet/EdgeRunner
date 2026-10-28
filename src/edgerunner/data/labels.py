@@ -16,8 +16,8 @@ import rtree
 import scipy.spatial
 import shapely
 
-from .._sam_road import graph_utils, sam_dataset
 from .. import px
+from .._sam_road import graph_utils, sam_dataset
 from .roads import Roads
 
 Graph = dict[tuple[int, int], list[tuple[int, int]]]  # sat2graph adjacency, (row, col) nodes
@@ -45,8 +45,9 @@ class WindowLabels:
     margin: int  # px: the patch is [margin, margin + P) in the grown frame
 
 
-def render_window(roads: Roads, inv_transform: Any, size: int, gsd: float,
-                  cfg: LabelConfig) -> WindowLabels:
+def render_window(
+    roads: Roads, inv_transform: Any, size: int, gsd: float, cfg: LabelConfig
+) -> WindowLabels:
     """Masks + graph of the `size`² patch whose world → pixel transform is `inv_transform`."""
     m = px(cfg.margin_m, gsd)
     full = size + 2 * m
@@ -91,8 +92,14 @@ class WindowGraphLabeler(sam_dataset.GraphLabelGenerator):
     bulk-loaded. `sample_patch` (NMS, neighbour queries, BFS connectivity, rotation) is upstream's.
     """
 
-    def __init__(self, config: Any, graph: Graph, subdivide_px: int,
-                 crossover_exclude_px: float, interesting_px: float):
+    def __init__(
+        self,
+        config: Any,
+        graph: Graph,
+        subdivide_px: int,
+        crossover_exclude_px: float,
+        interesting_px: float,
+    ):
         self.config = config
         self.subdivide_resolution = subdivide_px
         if not graph:  # upstream sample_patch returns its padding sample when the rtree is empty
@@ -104,12 +111,12 @@ class WindowGraphLabeler(sam_dataset.GraphLabelGenerator):
         # (row, col) → (x, y), as upstream does for cityscale
         self.full_graph_origin = graph_utils.igraph_from_adj_dict(graph, lambda v: v[:, ::-1])
         self.crossover_points = graph_utils.find_crossover_points(self.full_graph_origin)
-        self.full_graph_subdivide = graph_utils.subdivide_graph(self.full_graph_origin,
-                                                                subdivide_px)
+        self.full_graph_subdivide = graph_utils.subdivide_graph(
+            self.full_graph_origin, subdivide_px
+        )
         pts = np.array(self.full_graph_subdivide.vs["point"], dtype=np.float64)
         self.subdivide_points = pts
-        self.graph_rtee = rtree.index.Index(
-            (i, (x, y, x, y), None) for i, (x, y) in enumerate(pts))
+        self.graph_rtee = rtree.index.Index((i, (x, y, x, y), None) for i, (x, y) in enumerate(pts))
         self.graph_kdtree = scipy.spatial.KDTree(pts)
 
         # bridges: points near a crossover are never sampled
@@ -129,10 +136,16 @@ class WindowGraphLabeler(sam_dataset.GraphLabelGenerator):
         self.sample_weights[sorted(interesting)] = 0.9
 
 
-def topo_labels(sam_cfg: Any, labels: WindowLabels, size: int, gsd: float, cfg: LabelConfig,
-                rot: int = 0) -> tuple[np.ndarray, list[Any]]:
+def topo_labels(
+    sam_cfg: Any, labels: WindowLabels, size: int, gsd: float, cfg: LabelConfig, rot: int = 0
+) -> tuple[np.ndarray, list[Any]]:
     """`sample_patch` on the patch: points (x, y) in the patch frame + (pairs, connected, valid)."""
-    gen = WindowGraphLabeler(sam_cfg, labels.graph, px(cfg.subdivide_m, gsd),
-                             cfg.crossover_exclude_m / gsd, cfg.interesting_m / gsd)
+    gen = WindowGraphLabeler(
+        sam_cfg,
+        labels.graph,
+        px(cfg.subdivide_m, gsd),
+        cfg.crossover_exclude_m / gsd,
+        cfg.interesting_m / gsd,
+    )
     m = labels.margin
     return gen.sample_patch(((m, m), (m + size, m + size)), rot_index=rot)
