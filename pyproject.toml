@@ -51,3 +51,13 @@ select = ["E", "F", "W", "I", "N", "UP", "B", "C4"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = ["slow: builds the ViT-B model on CPU"]
+
+# CUDA 12 build: the A40 cluster already ran CUDA 12.8 builds, CUDA 13 needs a driver >= 580
+[tool.uv.sources]
+torch = { index = "pytorch-cu126" }
+torchvision = { index = "pytorch-cu126" }
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
