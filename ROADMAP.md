@@ -68,7 +68,7 @@ just toy && just dev         # exit 0
 | `src/edgerunner/smoke.py` | Overlays PNG, stats des labels, débit du DataLoader |
 | `configs/train.yaml` | **La** config : `data_root`, `gsd`, `patch_size`, sections `data`, `model` (clés amont), `trainer` |
 | `Justfile` | `setup`, `submodules`, `toy`, `test`, `fmt`, `dev`, `train`, `smoke`, `cluster [train\|dev\|smoke]` |
-| `.github/workflows/ci.yml` | CI : `just submodules`, `uv sync --locked`, `just test`, hooks pre-commit |
+| `.github/workflows/ci.yml` | CI : `just submodules`, `uv sync --locked --extra clearml`, `just test`, hooks pre-commit |
 | `.pre-commit-config.yaml` | hooks : YAML/TOML, fin de fichier, espaces, gros fichiers, ruff check + format (version de uv.lock) |
 | `LICENSE`, `CITATION.cff` | MIT ; citation du dépôt + SAM-Road + Segment Anything |
 | `sbatch/train_samroad.sh` | Copie sur le NVMe de chaque nœud (arborescence `data_root`), puis DDP 2 × 3 A40 ou smoke |
