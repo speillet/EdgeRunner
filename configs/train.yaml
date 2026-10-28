@@ -1,0 +1,54 @@
+# EdgeRunner: SAM-Road on BD ORTHO. The only config; override any key on the command line:
+#   just train data_root=/var/nvme/me/edgerunner trainer.max_epochs=20 data.batch_size=8
+# Distances are in metres; ${px:m,${gsd}} converts them to pixels at the run GSD.
+
+data_root: data            # index/{tiles,windows}.parquet, cog/<uri>, bdtopo/troncon/dept=XX/
+sam_ckpt: checkpoints/sam_vit_b_01ec64.pth
+run_name: samroad
+gsd: 0.4                   # m/px seen by the model (COG overviews do the resampling)
+patch_size: 1024           # 1024 px at 0.4 m = 410 m = one 2048 px eval window
+neighbor_radius_m: 64      # topology neighbourhood (sam_road: 64 px at 1 m/px)
+lr_milestones: [9]         # epochs where the LR is divided by 10
+seed: 42
+ckpt_path: null            # Lightning checkpoint to resume from
+clearml: false             # true: ClearML task on rank 0 mirroring TensorBoard (CLEARML_* env)
+clearml_project: road_extraction/EdgeRunner/SAMRoad
+
+data:
+  train_folds: ["0", "1", "2", "3"]
+  val_folds: ["4"]
+  batch_size: 4
+  num_workers: 8
+  samples_per_epoch: 20000
+  val_max_patches: 1000    # fixed subset of the val patches
+  labels:                  # more keys: edgerunner/data/labels.py LabelConfig
+    margin_m: ${neighbor_radius_m}
+    road_width_m: 3.0      # null: BD TOPO carriageway width
+    keypoint_radius_m: 3.0
+
+model:                     # upstream SAM-Road keys; absent flags (LoRA, SAM decoder, focal) are off
+  SAM_VERSION: vit_b
+  SAM_CKPT_PATH: ${sam_ckpt}
+  PATCH_SIZE: ${patch_size}
+  BASE_LR: 0.001
+  ENCODER_LR_FACTOR: 0.1
+  FREEZE_ENCODER: false
+  TOPO_SAMPLE_NUM: 512
+  ROAD_NMS_RADIUS: ${px:16,${gsd}}
+  NEIGHBOR_RADIUS: ${px:${neighbor_radius_m},${gsd}}
+  MAX_NEIGHBOR_QUERIES: 16
+
+trainer:                   # lightning.pytorch.Trainer arguments
+  accelerator: auto
+  devices: 1
+  num_nodes: 1
+  strategy: auto           # cluster: ddp
+  precision: 16-mixed
+  max_epochs: 10
+  fast_dev_run: false      # dev: 2
+  num_sanity_val_steps: 2
+  log_every_n_steps: 20
+
+hydra:
+  run:
+    dir: outputs/${run_name}/${now:%Y-%m-%d_%H-%M-%S}
