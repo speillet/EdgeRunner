@@ -1,0 +1,11 @@
+road_graph_extractor-main/
+.venv/
+__pycache__/
+*.egg-info/
+/outputs/
+/checkpoints/
+/data/
+/logs/
+/lightning_logs/
+.pytest_cache/
+.ruff_cache/
