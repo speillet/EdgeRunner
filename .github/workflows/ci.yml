@@ -1,0 +1,25 @@
+# Same checks as `just test` (pytest, ruff, format, pyright) + the pre-commit hooks, on CPU.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true  # keyed on uv.lock: torch is only downloaded when the lock changes
+      - name: Submodules (sam_road + sam over https)
+        run: uvx --from rust-just just submodules
+      - name: Environment
+        run: uv sync --locked
+      - name: Tests, lint, format, types
+        run: uvx --from rust-just just test
+      - name: pre-commit hooks
+        run: uv run pre-commit run --all-files --show-diff-on-failure
