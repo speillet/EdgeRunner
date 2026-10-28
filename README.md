@@ -187,3 +187,30 @@ outputs/<run_name>/<date>/
 - sam_road ne détecte pas un pont qui passe exactement sur un nœud.
 - Offsets TopoNet en pixels bruts : les checkpoints cityscale (1 m/px) ne se transfèrent pas tels quels.
 - Pas encore d'inférence sur dalle entière ni d'APLS/TOPO (ROADMAP, CP9 et CP10).
+
+## Licences et citation
+
+| Élément | Licence |
+| --- | --- |
+| EdgeRunner (ce dépôt hors `third_party/`) | MIT ([LICENSE](LICENSE)) |
+| `third_party/sam_road` (htcr) | MIT |
+| `third_party/sam_road/sam` (fork de Segment Anything) | Apache-2.0 |
+| Poids SAM ViT-B (`sam_vit_b_01ec64.pth`, Meta) | Apache-2.0 |
+
+Pour citer : [CITATION.cff](CITATION.cff) (bouton « Cite this repository » sur GitHub), qui
+référence aussi les deux papiers sur lesquels EdgeRunner repose :
+
+```bibtex
+@article{hetang2024segment,
+  title={Segment Anything Model for Road Network Graph Extraction},
+  author={Hetang, Congrui and Xue, Haoru and Le, Cindy and Yue, Tianwei and Wang, Wenping and He, Yihui},
+  journal={arXiv preprint arXiv:2403.16051},
+  year={2024}
+}
+@article{kirillov2023segany,
+  title={Segment Anything},
+  author={Kirillov, Alexander and Mintun, Eric and Ravi, Nikhila and Mao, Hanzi and Rolland, Chloe and Gustafson, Laura and Xiao, Tete and Whitehead, Spencer and Berg, Alexander C. and Lo, Wan-Yen and Doll{\'a}r, Piotr and Girshick, Ross},
+  journal={arXiv:2304.02643},
+  year={2023}
+}
+```

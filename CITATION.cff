@@ -1,0 +1,40 @@
+cff-version: 1.2.0
+message: "Si vous utilisez EdgeRunner, citez ce dépôt et les travaux sur lesquels il repose."
+title: EdgeRunner
+type: software
+authors:
+  - family-names: Peillet
+    given-names: Stéphane
+license: MIT
+repository-code: "https://github.com/speillet/EdgeRunner"
+references:
+  - type: article
+    title: "Segment Anything Model for Road Network Graph Extraction"
+    authors:
+      - {family-names: Hetang, given-names: Congrui}
+      - {family-names: Xue, given-names: Haoru}
+      - {family-names: Le, given-names: Cindy}
+      - {family-names: Yue, given-names: Tianwei}
+      - {family-names: Wang, given-names: Wenping}
+      - {family-names: He, given-names: Yihui}
+    year: 2024
+    notes: "CVPR 2024 Workshops (SG2RL). Code: https://github.com/htcr/sam_road (MIT)"
+    url: "https://arxiv.org/abs/2403.16051"
+  - type: article
+    title: "Segment Anything"
+    authors:
+      - {family-names: Kirillov, given-names: Alexander}
+      - {family-names: Mintun, given-names: Eric}
+      - {family-names: Ravi, given-names: Nikhila}
+      - {family-names: Mao, given-names: Hanzi}
+      - {family-names: Rolland, given-names: Chloe}
+      - {family-names: Gustafson, given-names: Laura}
+      - {family-names: Xiao, given-names: Tete}
+      - {family-names: Whitehead, given-names: Spencer}
+      - {family-names: Berg, given-names: Alexander C.}
+      - {family-names: Lo, given-names: Wan-Yen}
+      - {family-names: Dollár, given-names: Piotr}
+      - {family-names: Girshick, given-names: Ross}
+    year: 2023
+    notes: "ICCV 2023. Encoder weights sam_vit_b_01ec64.pth (Apache-2.0)"
+    url: "https://arxiv.org/abs/2304.02643"

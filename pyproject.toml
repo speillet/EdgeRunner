@@ -3,6 +3,7 @@ name = "edgerunner"
 version = "0.1.0"
 description = "SAM-Road road graph extraction on IGN BD ORTHO tiles (Lightning + Hydra)"
 requires-python = ">=3.10"
+license = "MIT"
 dependencies = [
     "torch>=2.4",
     "torchvision>=0.19",
