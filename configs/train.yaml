@@ -15,8 +15,8 @@ clearml: false             # true: ClearML task on rank 0 mirroring TensorBoard 
 clearml_project: road_extraction/EdgeRunner/SAMRoad
 
 data:
-  train_folds: ["0", "1", "2", "3"]
-  val_folds: ["4"]
+  train_folds: ["1", "2", "3", "4"]   # road_graph_extractor split (edgerunner.data.index):
+  val_folds: ["0"]                    # folds test / ext_test are never trained on
   batch_size: 4
   num_workers: 8
   samples_per_epoch: 20000
