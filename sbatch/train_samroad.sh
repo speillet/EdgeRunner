@@ -60,8 +60,20 @@ srun --ntasks-per-node=1 --ntasks="$SLURM_JOB_NUM_NODES" bash -c '
   rsync -a "$DS/bdtopo/bretagne/troncon" "$NVME/bdtopo/"
   rsync -a "$DS/checkpoints/$CKPT" "$NVME/"
   split -n l/8 "$TILES" "/tmp/samroad_${SLURM_JOB_ID}_"  # 8 parallel copies from CIFS
-  for f in /tmp/samroad_${SLURM_JOB_ID}_*; do rsync -a --files-from="$f" "$DS/cog/" "$NVME/cog/" & done
-  wait; rm -f /tmp/samroad_${SLURM_JOB_ID}_*
+  pids=()
+  for f in /tmp/samroad_${SLURM_JOB_ID}_*; do
+    rsync -a --files-from="$f" "$DS/cog/" "$NVME/cog/" &
+    pids+=("$!")
+  done
+  failed=0
+  for pid in "${pids[@]}"; do
+    if ! wait "$pid"; then failed=1; fi
+  done
+  rm -f /tmp/samroad_${SLURM_JOB_ID}_*
+  if [ "$failed" != 0 ]; then
+    echo "COG staging failed on $(hostname)" >&2
+    exit 1
+  fi
   echo "$(hostname): $(du -sh "$NVME/cog" | cut -f1) of COGs in $(( $(date +%s) - t0 )) s"'
 
 ARGS=("data_root=$NVME" "sam_ckpt=$NVME/$CKPT" data.num_workers=10 "$@")

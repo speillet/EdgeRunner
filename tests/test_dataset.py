@@ -121,3 +121,57 @@ def test_workers(toy: Path, ctx: str) -> None:
     offs = {(b["tile_id"][i], b["row_off"][i], b["col_off"][i]) for b in batches for i in range(2)}
     assert len(offs) > 4  # workers draw different windows
     assert np.isfinite(batches[0]["graph_points"].numpy()).all()
+
+
+@pytest.mark.parametrize("rot", [0, 1, 2, 3])
+def test_nodata_mask_and_topology_follow_rotation(toy: Path, rot: int) -> None:
+    ds = make(toy, ["4"])
+    item = ds.read(ds.tile("toy_4"), 0, 512, rot=rot)
+    expected = np.ones((256, 256), dtype=bool)
+    expected[:, 128:] = False
+    assert np.array_equal(item["pixel_valid"].numpy(), np.rot90(expected, rot))
+    pairs = item["pairs"][item["valid"]].long()
+    assert len(pairs) > 0
+    rc = (item["graph_points"][pairs].flip(-1) + 0.5).floor().long()
+    assert ((rc >= 0) & (rc < 256)).all()
+    assert item["pixel_valid"][rc[..., 0], rc[..., 1]].all()
+    ds_empty = make(toy, ["4"], gsd=0.2)
+    empty = ds_empty.read(ds_empty.tile("toy_4"), 0, 768, rot=rot)
+    assert not empty["pixel_valid"].any() and not empty["valid"].any()
+
+
+def test_raster_cache_closes_least_recently_used(toy: Path) -> None:
+    ds = make(toy, ["0", "1", "2"], raster_cache_size=2)
+    ds._check_process()
+    first = ds._open(ds.tile("toy_0").uri)
+    second = ds._open(ds.tile("toy_1").uri)
+    assert ds._open(ds.tile("toy_0").uri) is first  # refresh recency
+    third = ds._open(ds.tile("toy_2").uri)
+    assert second.closed and not first.closed and not third.closed
+    assert len(ds._src) == 2
+    reopened = ds._open(ds.tile("toy_1").uri)
+    assert reopened is not second and not reopened.closed and first.closed
+    ds.close()
+    assert reopened.closed and third.closed and not ds._src
+
+
+def test_gdal_mask_excludes_nonzero_pixels(toy: Path, tmp_path: Path) -> None:
+    import rasterio
+
+    ds = make(toy, ["0"], gsd=0.2)
+    tile = ds.tile("toy_0")
+    with rasterio.open(toy / "cog" / tile.uri) as original:
+        profile = original.profile
+    masked = tmp_path / "masked.tif"
+    with rasterio.open(masked, "w", **profile) as dst:
+        dst.write(np.full((3, 1024, 1024), 128, dtype=np.uint8))
+        mask = np.full((1024, 1024), 255, dtype=np.uint8)
+        mask[:, 128:] = 0
+        dst.write_mask(mask)
+    ds._check_process()
+    ds._src[tile.uri] = rasterio.open(masked)
+    item = ds.read(tile, 0, 0)
+    assert item["rgb"].min() == 128
+    assert item["pixel_valid"][:, :128].all()
+    assert not item["pixel_valid"][:, 128:].any()
+    ds.close()

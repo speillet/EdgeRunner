@@ -57,6 +57,7 @@ class IGNSamRoadDataset(Dataset):
         max_patches: int | None = None,
         min_valid: float = 0.5,
         roads_cache_size: int = 64,
+        raster_cache_size: int = 32,
         native_gsd: float = 0.2,
         seed: int = 0,
     ):
@@ -69,6 +70,9 @@ class IGNSamRoadDataset(Dataset):
         self.root = str(root).rstrip("/")  # str: may become an http(s) prefix later
         self.samples_per_epoch, self.min_valid = samples_per_epoch, min_valid
         self.roads_cache_size = roads_cache_size
+        if raster_cache_size < 1:
+            raise ValueError("raster_cache_size must be >= 1")
+        self.raster_cache_size = raster_cache_size
 
         self.patch = int(self.sam_cfg.PATCH_SIZE)
         native = self.patch * gsd / native_gsd
@@ -90,7 +94,7 @@ class IGNSamRoadDataset(Dataset):
         self.patches = self._eval_patches(folds, max_patches) if mode == "eval" else []
 
         self._pid: int | None = None
-        self._src: dict[str, Any] = {}
+        self._src: OrderedDict[str, Any] = OrderedDict()
         self._roads: OrderedDict[str, Roads] = OrderedDict()
         self._rng: np.random.Generator | None = None
 
@@ -117,7 +121,13 @@ class IGNSamRoadDataset(Dataset):
 
     def __getstate__(self) -> dict[str, Any]:
         # workers (fork / forkserver) start without open handles
-        return {**self.__dict__, "_pid": None, "_src": {}, "_roads": OrderedDict(), "_rng": None}
+        return {
+            **self.__dict__,
+            "_pid": None,
+            "_src": OrderedDict(),
+            "_roads": OrderedDict(),
+            "_rng": None,
+        }
 
     def __len__(self) -> int:
         return self.samples_per_epoch if self.mode == "train" else len(self.patches)
@@ -129,14 +139,29 @@ class IGNSamRoadDataset(Dataset):
         """Per-process state: handles inherited through fork are dropped, RNG reseeded."""
         if self._pid == os.getpid():
             return
-        self._pid, self._src, self._roads = os.getpid(), {}, OrderedDict()
+        self.close()
+        self._pid, self._roads = os.getpid(), OrderedDict()
         # torch seeds each worker (rank-aware under Lightning's seed_everything(workers=True))
         rank = int(os.environ.get("RANK", os.environ.get("SLURM_PROCID", 0)))
         self._rng = np.random.default_rng([torch.initial_seed(), rank])
 
+    def close(self) -> None:
+        """Release this process's cached raster handles."""
+        for src in self._src.values():
+            src.close()
+        self._src.clear()
+
+    def __del__(self) -> None:
+        if hasattr(self, "_src"):
+            self.close()
+
     def _open(self, uri: str) -> Any:
         if uri not in self._src:
             self._src[uri] = rasterio.open(f"{self.root}/cog/{uri}")
+        self._src.move_to_end(uri)
+        if len(self._src) > self.raster_cache_size:
+            _, evicted = self._src.popitem(last=False)
+            evicted.close()
         return self._src[uri]
 
     def _tile_roads(self, tile: Any) -> Roads:
@@ -190,10 +215,21 @@ class IGNSamRoadDataset(Dataset):
         src = self._open(tile.uri)
         win = self._window(r, c)
         rgb = src.read((1, 2, 3), window=win, out_shape=(3, p, p), resampling=Resampling.average)
+        # Honour GDAL masks and the IGN all-zero RGB convention (also used by the toy).
+        pixel_valid = np.any(rgb != 0, axis=0) & (
+            src.dataset_mask(window=win, out_shape=(p, p), resampling=Resampling.nearest) > 0
+        )
         patch_tf = window_transform(win, src.transform) @ Affine.scale(s / p)
         lab = render_window(self._tile_roads(tile), ~patch_tf, p, self.gsd, self.labels)
         points, samples = topo_labels(self.sam_cfg, lab, p, self.gsd, self.labels, rot)
         pairs, connected, valid = (np.asarray(x) for x in zip(*samples, strict=True))
+        pixel_valid = np.ascontiguousarray(np.rot90(pixel_valid, rot))
+        # No topology supervision when either sampled endpoint is outside visible imagery.
+        point_rc = np.floor(points[:, ::-1] + 0.5).astype(int)
+        inside = ((point_rc >= 0) & (point_rc < p)).all(axis=1)
+        rc = np.clip(point_rc, 0, p - 1)
+        point_valid = inside & pixel_valid[rc[:, 0], rc[:, 1]]
+        valid &= point_valid[pairs].all(axis=-1)
         rgb, road, kp = (
             np.ascontiguousarray(np.rot90(a, rot, (0, 1)))
             for a in (np.moveaxis(rgb, 0, -1), lab.road_mask, lab.keypoint_mask)
@@ -202,6 +238,7 @@ class IGNSamRoadDataset(Dataset):
             "rgb": torch.from_numpy(rgb),  # uint8 [P, P, 3], cast by the module on the GPU
             "keypoint_mask": torch.from_numpy(kp),  # uint8 {0, 1} [P, P]
             "road_mask": torch.from_numpy(road),
+            "pixel_valid": torch.from_numpy(pixel_valid),  # bool [P, P]
             "graph_points": torch.as_tensor(points, dtype=torch.float32),  # [N, 2] (x, y)
             "pairs": torch.as_tensor(pairs, dtype=torch.int32),  # [S, Q, 2]
             "connected": torch.as_tensor(connected, dtype=torch.bool),  # [S, Q]
