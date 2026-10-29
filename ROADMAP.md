@@ -16,6 +16,7 @@
   visibilité et collate isolés ; contrats typés ; script NVMe autonome ; RNG NumPy restauré.
 - **Cluster interne du 2026-10-29** (CP6d) : un `.slurm` par job, 1 nœud × 3 A40, index
   reconstruit avec les folds de road_graph_extractor (train 1–4, val 0, `test` exclu).
+  Validation croisée 5 folds (CP6e) : `just cluster cv`, synthèse `cv_summary.csv`.
   Validation : 52 tests dont 12 via `just unit` ; qualité du code et syntaxe Bash validées.
 - **Prochain** : **CP7** (validation sur vraies dalles, accès au cluster SLURM requis).
   Sans accès au cluster : faire **CP9** (inférence sur dalle entière) sur le jeu toy.
@@ -78,12 +79,13 @@ just toy && just dev         # exit 0
 | `src/edgerunner/models/sam_road.py` | `SAMRoadModule(SAMRoad)` |
 | `src/edgerunner/train.py` | `@hydra.main` : construction explicite (pas de `_target_`), `build_loaders(cfg)`, `provenance(data_root)`, ClearML optionnel |
 | `src/edgerunner/smoke.py` | Overlays PNG, stats des labels, débit du DataLoader |
+| `src/edgerunner/cv.py` | Synthèse de la validation croisée : `fold*/metrics.json` → `cv_summary.csv` (moyenne, écart-type) |
 | `configs/train.yaml` | **La** config : `data_root`, `gsd`, `patch_size`, sections `data`, `model` (clés amont), `trainer` |
-| `Justfile` | `setup`, `submodules`, `toy`, `test`, `fmt`, `dev`, `train`, `smoke`, `index`, `cluster [smoke\|dev\|train]` |
+| `Justfile` | `setup`, `submodules`, `toy`, `test`, `fmt`, `dev`, `train`, `smoke`, `index`, `cv-report`, `cluster [smoke\|dev\|train\|cv]` |
 | `.github/workflows/ci.yml` | CI : `just submodules`, `uv sync --locked --extra clearml`, `just test`, hooks pre-commit |
 | `.pre-commit-config.yaml` | hooks : YAML/TOML, fin de fichier, espaces, gros fichiers, ruff check + format (version de uv.lock) |
 | `LICENSE`, `CITATION.cff` | MIT ; citation du dépôt + SAM-Road + Segment Anything |
-| `sbatch/{smoke,dev,train}.slurm`, `common.sh`, `stage_data.sh` | Un job SLURM par fichier ; partie commune (env, index, copie) ; copie NVMe testable séparément |
+| `sbatch/{smoke,dev,train,cv}.slurm`, `common.sh`, `stage_data.sh` | Un job SLURM par fichier ; partie commune (env, index, copie) ; copie NVMe testable séparément |
 
 ## 3. Contrats à ne pas casser
 
@@ -132,6 +134,11 @@ just toy && just dev         # exit 0
   *Preuve* : `just test` (54 passed) ; index = 259 dalles, 54 zones, 37 296 fenêtres comme sa
   doc, les 36 dalles de `$DS/runs/1357/eval_fold0` en fold 0 ; `train.slurm` et `smoke.slurm`
   simulés hors SLURM (faux `srun`). **Jamais soumis au vrai SLURM.**
+- [x] **CP6e — Validation croisée** : `sbatch/cv.slurm` (array 0-4%2, tâche k = val sur le fold k,
+  train sur les 4 autres), `metrics.json` en fin d'entraînement (meilleur checkpoint réévalué),
+  `edgerunner.cv` → `cv_summary.csv`. *Preuve* : `just test` (56 passed) ; 2 tâches de
+  `cv.slurm` simulées sur le toy avec un vrai entraînement court (faux `srun`, copie NVMe
+  sautée) : dossiers `fold0/`, `fold1/`, `metrics.json` et synthèse corrects.
 
 ## 5. Checkpoints à venir
 
@@ -262,3 +269,4 @@ just toy && just dev         # exit 0
 | 2026-10-29 | Revue | Codex | Exclusion des pixels sans image des losses/IoU et des extrémités topo invalides ; cache raster LRU avec fermeture ; propagation des échecs rsync parallèles. 36 tests réussis, Ruff/formatage/Pyright OK, syntaxe Bash valide ; copie simulée hors SLURM. |
 | 2026-10-29 | Modularisation | Codex | Losses indépendantes de SAM/Lightning, lecture/cache raster et sampling séparés, visibilité/collate typés, RNG amont isolé et script NVMe extrait. 52 tests CPU dont 12 unitaires sans dataset/checkpoint ; Ruff, formatage, Pyright et syntaxe Bash validés. SLURM non exécuté. |
 | 2026-10-29 | CP6d | Claude (Opus) | Folds de road_graph_extractor reconstruits (259 dalles, 54 zones, 37 296 fenêtres, `eval_fold0` vérifié) dans `edgerunner.data.index` ; un `.slurm` par job sur 1 nœud × 3 A40 ; jobs simulés hors SLURM. Run local de nuit sur 190 dalles arrêté (il utilisait des folds provisoires incluant le fold `test`). |
+| 2026-10-29 | CP6e | Claude (Opus) | Validation croisée 5 folds en job array (2 à la fois, 1 nœud × 3 A40 par fold), score par fold (`metrics.json`) et synthèse `cv_summary.csv` ; simulée sur le toy, jamais soumise au vrai SLURM. |

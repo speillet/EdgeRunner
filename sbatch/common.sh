@@ -1,6 +1,7 @@
 #!/bin/bash
 # Sourced by the .slurm jobs: environment, index, copy of the data to each node's NVMe.
-# Env: DS (store with cog/, bdtopo/, checkpoints/), NVME, OUT (default $DS/runs/samroad_<job>),
+# Env: DS (store with cog/, bdtopo/, checkpoints/), NVME, OUT (default $DS/runs/samroad_<job>,
+# + /fold<k> for the task k of an array),
 # INDEX_DIR (default $DS/index if present, else rebuilt in $OUT/index by edgerunner.data.index),
 # FOLDS (folds whose COGs are copied), CLEARML (1/0, keys CLEARML_* in .env), RUN_NAME.
 # Leaves PY (venv python), ARGS (Hydra overrides for the NVMe copy) and run_train.
@@ -9,7 +10,11 @@ cd "$SLURM_SUBMIT_DIR"
 if [ -f .env ]; then set -a; source .env; set +a; fi
 DS=${DS:-/mnt/stores/store-DAI/pocs/datasets/road_graph_extractor}
 NVME=${NVME:-/var/nvme/$USER/edgerunner}
-OUT=${OUT:-$DS/runs/samroad_$SLURM_JOB_ID}
+OUT=${OUT:-$DS/runs/samroad_${SLURM_ARRAY_JOB_ID:-$SLURM_JOB_ID}}
+RUN_NAME=${RUN_NAME:-samroad}
+if [ -n "${SLURM_ARRAY_TASK_ID:-}" ]; then  # cross-validation: one folder per fold
+  OUT=$OUT/fold$SLURM_ARRAY_TASK_ID RUN_NAME=${RUN_NAME}_fold$SLURM_ARRAY_TASK_ID
+fi
 FOLDS=${FOLDS:-0 1 2 3 4}
 CLEARML=${CLEARML:-1}
 CKPT=sam_vit_b_01ec64.pth
@@ -64,6 +69,6 @@ run_train() {
   export NCCL_IB_DISABLE=${NCCL_IB_DISABLE:-1} NCCL_SOCKET_IFNAME=${NCCL_SOCKET_IFNAME:-bond0}
   srun "$PY" -m edgerunner.train "${ARGS[@]}" "trainer.devices=$SLURM_NTASKS_PER_NODE" \
     "trainer.num_nodes=$SLURM_JOB_NUM_NODES" trainer.strategy=ddp "hydra.run.dir=$OUT" \
-    "run_name=${RUN_NAME:-samroad}" "clearml=$cml" "$@"
+    "run_name=$RUN_NAME" "clearml=$cml" "$@"
   echo "[$(date)] done, outputs in $OUT"
 }

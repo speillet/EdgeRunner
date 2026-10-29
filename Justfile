@@ -56,7 +56,11 @@ smoke *args:
 index *args:
     uv run python -m edgerunner.data.index {{args}}
 
-# SLURM job on the internal cluster, mode = smoke | dev | train (sbatch/<mode>.slurm)
+# cross-validation table (mean, std over folds): just cv-report $DS/runs/samroad_<array job>
+cv-report *args:
+    uv run python -m edgerunner.cv {{args}}
+
+# SLURM job on the internal cluster, mode = smoke | dev | train | cv (sbatch/<mode>.slurm)
 cluster mode="train" *args:
     mkdir -p logs
     sbatch sbatch/{{mode}}.slurm {{args}}

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import subprocess
 from pathlib import Path
 from typing import Any, cast
@@ -67,19 +68,17 @@ def main(cfg: DictConfig) -> None:
         lr_milestones=list(cfg.lr_milestones),
         provenance=provenance(cfg.data_root),
     )
+    ckpt = ModelCheckpoint(
+        f"{out}/ckpt",
+        "{epoch:02d}-{val_loss:.4f}",
+        monitor="val_loss",
+        save_top_k=3,
+        save_last=True,
+    )
     trainer = pl.Trainer(
         **plain(cfg.trainer),
         logger=TensorBoardLogger(out, name="tb", version="", default_hp_metric=False),
-        callbacks=[
-            ModelCheckpoint(
-                f"{out}/ckpt",
-                "{epoch:02d}-{val_loss:.4f}",
-                monitor="val_loss",
-                save_top_k=3,
-                save_last=True,
-            ),
-            LearningRateMonitor("step"),
-        ],
+        callbacks=[ckpt, LearningRateMonitor("step")],
     )
     if cfg.clearml and trainer.is_global_zero:  # mirrors the TensorBoard logs
         from clearml import Task
@@ -92,6 +91,13 @@ def main(cfg: DictConfig) -> None:
         )
         task.connect(plain(cfg), name="hydra")
     trainer.fit(model, train_dl, val_dl, ckpt_path=cfg.ckpt_path)
+    if ckpt.best_model_path:  # none under fast_dev_run
+        # score of the run (one fold of the cross-validation): best checkpoint on the val folds
+        (metrics,) = trainer.validate(model, val_dl, ckpt_path="best", verbose=False)
+        if trainer.is_global_zero:
+            folds = [str(f) for f in cfg.data.val_folds]
+            summary = {"val_folds": folds, "best_ckpt": ckpt.best_model_path}
+            Path(out, "metrics.json").write_text(json.dumps({**summary, **metrics}, indent=2))
 
 
 if __name__ == "__main__":

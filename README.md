@@ -31,7 +31,7 @@ utile du COG et les routes de la dalle, et fabrique les labels de chaque patch a
 
 ```text
 EdgeRunner/
-├── Justfile                     [ER] une recette par action : setup, toy, test, fmt, dev, train, smoke, index, cluster
+├── Justfile                     [ER] une recette par action : setup, toy, test, fmt, dev, train, smoke, index, cv-report, cluster
 ├── pyproject.toml / uv.lock     [ER] paquet `edgerunner`, dépendances figées (uv), config ruff et pyright
 ├── .python-version              [ER] Python 3.12, le même partout (local, cluster, CI)
 ├── .pre-commit-config.yaml      [ER] hooks avant chaque commit (ruff, format, YAML, gros fichiers)
@@ -56,10 +56,12 @@ EdgeRunner/
 │   │   ├── losses.py                 losses sur tenseurs, sans SAM ni Lightning
 │   │   └── sam_road.py               SAMRoadModule : LightningModule hérité de SAMRoad
 │   ├── train.py                      point d'entrée Hydra (loaders, modèle, Trainer, provenance, ClearML)
-│   └── smoke.py                      overlays PNG, stats des labels, débit du DataLoader
+│   ├── smoke.py                      overlays PNG, stats des labels, débit du DataLoader
+│   └── cv.py                         synthèse de la validation croisée (moyenne, écart-type)
 ├── tests/                       [ER] tests CPU sur le jeu synthétique (pytest)
 ├── sbatch/                      [ER] jobs SLURM du cluster interne (1 nœud × 3 A40)
 │   ├── smoke.slurm / dev.slurm / train.slurm   un fichier par job, lisible seul
+│   ├── cv.slurm                      validation croisée 5 folds (job array, 2 folds à la fois)
 │   ├── common.sh                     commun : environnement, index, copie sur le NVMe
 │   └── stage_data.sh                 copie NVMe sur un nœud, testable sans SLURM
 ├── third_party/sam_road/        [SR] submodule htcr/sam_road, figé, jamais modifié
@@ -167,6 +169,7 @@ Les distances sont écrites en mètres et converties par `${px:m,${gsd}}`. Passe
 | `just train data_root=/data [clé=valeur…]` | entraînement |
 | `just smoke data_root=/data` | overlays PNG, stats des labels, débit (`outputs/smoke`) |
 | `just index <cog_dir> <out>` | index des COG avec les folds de road_graph_extractor |
+| `just cv-report <dossier>` | tableau de la validation croisée : une ligne par fold, moyenne, écart-type |
 | `just cluster [smoke\|dev\|train] [clé=valeur…]` | job SLURM `sbatch/<mode>.slurm` : données lues dans `$DS`, le store partagé (voir § Cluster) |
 
 Sur une carte de 12 Go, 1024 px ne passe qu'en batch 1 (sinon `gsd=0.8 patch_size=512`).
@@ -195,6 +198,7 @@ just cluster smoke     # CPU : overlays + débit depuis le NVMe ($OUT/smoke)
 just cluster dev       # 2 batchs par GPU en DDP 3 × A40 : valide l'enchaînement
 just cluster train     # entraînement complet, 48 h max
 just cluster train ckpt_path=$DS/runs/samroad_<job>/ckpt/last.ckpt   # reprise
+just cluster cv        # validation croisée : 5 entraînements, 2 à la fois
 ```
 
 Chaque job lit `DS=/mnt/stores/store-DAI/pocs/datasets/road_graph_extractor` (modifiable par
@@ -202,6 +206,13 @@ variable d'environnement), prend l'index officiel s'il existe dans `$DS/index`, 
 reconstruit dans le dossier du run, copie les COG des folds 0–4 sur le NVMe du nœud (copie
 incrémentale, longue la première fois) et écrit tout dans `$DS/runs/samroad_<job>`. Journal :
 `logs/<job>_<id>.out` ; ClearML actif si `CLEARML_*` est dans `.env` (`CLEARML=0` pour couper).
+
+**Validation croisée** (`cv.slurm`) : la tâche k s'entraîne sur les 4 autres folds de 0–4 et se
+valide sur le fold k ; le fold `test` n'est jamais utilisé. Chaque fold écrit
+`$DS/runs/samroad_<id>/fold<k>/` avec son `metrics.json` (meilleur checkpoint évalué sur le fold
+k), et `cv_summary.csv` (une ligne par fold, moyenne, écart-type) est mis à jour à chaque fold
+terminé. Reprendre un fold coupé à 48 h dans son dossier :
+`OUT=…/samroad_<id> sbatch --array=<k> sbatch/cv.slurm ckpt_path=…/samroad_<id>/fold<k>/ckpt/last.ckpt`.
 `just toy` génère la même arborescence avec des dalles factices.
 
 ## Sorties d'un run
@@ -213,6 +224,7 @@ outputs/<run_name>/<date>/
   tb/                     TensorBoard : losses, IoU, F1 topo, LR, images val/masks ;
                           hparams.yaml = config SAM-Road résolue (rayons en pixels) + provenance
   ckpt/                   3 meilleurs checkpoints (val_loss) + last.ckpt
+  metrics.json            meilleur checkpoint réévalué sur les folds de validation (score du run)
 ```
 
 `uv run tensorboard --logdir outputs` pour suivre les courbes.
