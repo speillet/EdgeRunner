@@ -10,19 +10,19 @@ from __future__ import annotations
 import argparse
 import time
 from pathlib import Path
-from typing import Any
 
 import cv2
 import numpy as np
 from hydra import compose, initialize_config_dir
 
 from .data.dataset import IGNSamRoadDataset
+from .data.types import Sample
 from .train import build_loaders
 
 CONFIGS = Path(__file__).resolve().parents[2] / "configs"
 
 
-def overlay(item: dict[str, Any], path: Path, max_side: int = 1024) -> None:
+def overlay(item: Sample, path: Path, max_side: int = 1024) -> None:
     bgr = item["rgb"].numpy()[..., ::-1].copy()
     for key, color, alpha in (("road_mask", (0, 0, 255), 0.5), ("keypoint_mask", (0, 255, 0), 0.6)):
         m = item[key].numpy() > 0

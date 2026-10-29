@@ -8,11 +8,12 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.mark.parametrize("fail_copy", [False, True])
 def test_staging_propagates_background_copy_failure(tmp_path: Path, fail_copy: bool) -> None:
-    script = (Path(__file__).resolve().parents[1] / "sbatch/train_samroad.sh").read_text()
-    block = script.split("bash -c '\n", 1)[1].split("'\n", 1)[0]
+    script = Path(__file__).resolve().parents[1] / "sbatch/stage_data.sh"
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     rsync = fake_bin / "rsync"
@@ -39,7 +40,7 @@ def test_staging_propagates_background_copy_failure(tmp_path: Path, fail_copy: b
         "COPIED": str(copied),
         "FAIL_COPY": str(int(fail_copy)),
     }
-    result = subprocess.run(["bash", "-c", block], env=env, capture_output=True, text=True)
+    result = subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True)
     assert (result.returncode != 0) == fail_copy, result.stderr
     assert sorted(copied.read_text().splitlines()) == sorted(tiles.read_text().splitlines())
     assert ("COG staging failed" in result.stderr) == fail_copy

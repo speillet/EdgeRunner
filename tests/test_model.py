@@ -11,7 +11,7 @@ from edgerunner.data.dataset import collate
 
 from .test_dataset import make, sam_cfg
 
-pytestmark = pytest.mark.slow
+pytestmark = [pytest.mark.slow, pytest.mark.integration]
 
 
 @pytest.fixture(scope="module")
@@ -52,7 +52,7 @@ def test_schedule_from_config(module) -> None:  # noqa: ANN001
 
 
 @pytest.mark.parametrize("empty", [False, True])
-def test_invalid_pixels_do_not_contribute_to_losses_or_iou(
+def test_invalid_pixels_do_not_contribute_to_iou(
     module, toy: Path, monkeypatch: pytest.MonkeyPatch, empty: bool
 ) -> None:  # noqa: ANN001
     batch = module.on_after_batch_transfer(collate([make(toy, ["0"])[0]]), 0)
@@ -66,21 +66,6 @@ def test_invalid_pixels_do_not_contribute_to_losses_or_iou(
     monkeypatch.setattr(
         module, "forward", lambda *args: (logits, logits.sigmoid(), topo, topo.sigmoid())
     )
-    loss, topo_loss, _, _ = module._losses(batch)
-    batch["road_mask"][~pixels] = 1 - batch["road_mask"][~pixels]
-    batch["keypoint_mask"][~pixels] = 1 - batch["keypoint_mask"][~pixels]
-    with torch.no_grad():
-        logits[~pixels] = 20  # wrong predictions in unseen areas must have no effect
-    changed_loss, _, _, _ = module._losses(batch)
-    torch.testing.assert_close(loss, changed_loss)
-    assert torch.isfinite(loss) and topo_loss.item() == 0
-    changed_loss.backward()
-    assert logits.grad[~pixels].count_nonzero() == 0
-    if empty:
-        assert loss.item() == 0
-    else:
-        assert logits.grad[pixels].abs().sum() > 0
-
     monkeypatch.setattr(module, "log_dict", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "_log_images", lambda *args: None)
     module.keypoint_iou.reset()

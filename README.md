@@ -44,14 +44,21 @@ EdgeRunner/
 │   ├── data/
 │   │   ├── roads.py                  lecture BD TOPO par emprise de dalle (GeoParquet, filtres)
 │   │   ├── labels.py                 masques + graphe d'un patch, cibles topo via sam_road
-│   │   ├── dataset.py                dataset à la volée, collate, make_loaders
+│   │   ├── dataset.py                orchestration du dataset et make_loaders
+│   │   ├── raster.py                 lecture COG, transformations et cache LRU par processus
+│   │   ├── sampling.py               fenêtres aléatoires, grille d’éval et isolation du RNG amont
+│   │   ├── transforms.py             visibilité des paires topologiques
+│   │   ├── types.py                  contrats TypedDict : Targets, Sample, Batch
+│   │   ├── batch.py                  collate typé, padding des points
 │   │   └── toy.py                    générateur de données synthétiques au format réel
 │   ├── models/
+│   │   ├── losses.py                 losses sur tenseurs, sans SAM ni Lightning
 │   │   └── sam_road.py               SAMRoadModule : LightningModule hérité de SAMRoad
 │   ├── train.py                      point d'entrée Hydra (loaders, modèle, Trainer, provenance, ClearML)
 │   └── smoke.py                      overlays PNG, stats des labels, débit du DataLoader
 ├── tests/                       [ER] tests CPU sur le jeu synthétique (pytest)
-├── sbatch/train_samroad.sh      [ER] job SLURM : copie des données sur NVMe puis DDP 2 × 3 A40
+├── sbatch/train_samroad.sh      [ER] job SLURM : préparation puis DDP 2 × 3 A40
+├── sbatch/stage_data.sh         [ER] copie NVMe sur un nœud, testable sans SLURM
 ├── third_party/sam_road/        [SR] submodule htcr/sam_road, figé, jamais modifié
 │   ├── model.py                      réseau SAMRoad, losses, métriques, optimiseur      → utilisé
 │   ├── dataset.py                    GraphLabelGenerator (cibles topo) ; SatMapDataset  → en partie
@@ -82,10 +89,10 @@ EdgeRunner/
 | Boucle d'entraînement Lightning | **EdgeRunner** `models/sam_road.py` | sous-classe : batch uint8 → float, loss topo sûre sans route, images TensorBoard au lieu de wandb, paliers de LR configurables |
 | Cibles topologiques (points, paires voisines, connectées ou non) | sam_road `GraphLabelGenerator.sample_patch` | **EdgeRunner** réécrit seulement son `__init__` (`WindowGraphLabeler`) : graphe local au patch, rayons en mètres |
 | Outils de graphe (igraph, croisements, subdivision, NMS, BFS) | sam_road `graph_utils.py` | utilisés tels quels |
-| Lecture des images (fenêtre COG à la GSD voulue) | **EdgeRunner** `data/dataset.py` | sam_road charge des PNG entiers en RAM |
+| Lecture des images (fenêtre COG à la GSD voulue) | **EdgeRunner** `data/raster.py` | sam_road charge des PNG entiers en RAM |
 | Lecture des routes (BD TOPO, filtres) | **EdgeRunner** `data/roads.py` | sam_road lit un graphe pickle pré-calculé |
 | Masques route / keypoints et graphe du patch | **EdgeRunner** `data/labels.py` | sam_road lit des PNG pré-calculés |
-| Tirage des patches, folds, fenêtres d'éval | **EdgeRunner** `data/dataset.py` | index `tiles.parquet` / `windows.parquet` |
+| Tirage des patches, folds, fenêtres d'éval | **EdgeRunner** `data/sampling.py` + `dataset.py` | index `tiles.parquet` / `windows.parquet` |
 | Config, entrée, logs, cluster | **EdgeRunner** | Hydra + Justfile + TensorBoard/ClearML + SLURM (sam_road : argparse + YAML + wandb) |
 | Index, COG, GeoParquet BD TOPO | road_graph_extractor | fichiers seulement, pas de code |
 
@@ -101,7 +108,7 @@ changeant simplement de commit.
 index/tiles.parquet ──► tirage d'une dalle (au prorata de valid_frac) et d'une fenêtre
                          │  (refusée si < 50 % de pixels valides, lu sur overview)
                          ▼
-cog/<dalle>.tif ───────► lecture de la seule fenêtre, rééchantillonnée à gsd   [dataset.py]
+cog/<dalle>.tif ───────► lecture de la seule fenêtre, rééchantillonnée à gsd   [raster.py]
 bdtopo/troncon/ ───────► routes de l'emprise de la dalle, en cache par worker  [roads.py]
                          ▼
                          render_window : patch agrandi de 64 m → masque route 3 m,
@@ -109,7 +116,7 @@ bdtopo/troncon/ ───────► routes de l'emprise de la dalle, en cac
                          ▼
                          WindowGraphLabeler.sample_patch : points + paires     [labels.py → sam_road]
                          ▼
-                         rot90 aléatoire, collate → batch                       [dataset.py]
+                         rot90 aléatoire, collate → batch                       [dataset.py, batch.py]
                          ▼
                          SAMRoadModule : SAMRoad.forward, loss masques + topo  [models → sam_road]
 ```
@@ -150,7 +157,8 @@ Les distances sont écrites en mètres et converties par `${px:m,${gsd}}`. Passe
 | --- | --- |
 | `just setup` | submodule (https), `uv sync --locked`, hooks pre-commit, checkpoint SAM ViT-B |
 | `just toy` | jeu synthétique dans `data/toy` |
-| `just test` | tests CPU, ruff, formatage, pyright : exactement ce que lance la CI |
+| `just test` | tous les tests CPU, ruff, formatage, pyright : exactement ce que lance la CI |
+| `just unit` | calculs en mémoire, sans checkpoint SAM ni jeu de données sur disque |
 | `just fmt` | formate et corrige automatiquement le code |
 | `just dev [clé=valeur…]` | 2 batchs sur le toy à 0.8 m / 512 px (tient sur 12 Go) |
 | `just train data_root=/data [clé=valeur…]` | entraînement |
@@ -192,12 +200,26 @@ drapeau `dirty` (modifications non commitées), le commit de sam_road et une emp
 
 ## Tests
 
-| Fichier | Ce qui est vérifié |
-| --- | --- |
-| `tests/test_labels.py` | carrefours et extrémités, rien au bord ni sur un pont, largeur du masque, rotation |
-| `tests/test_dataset.py` | filtres BD TOPO, format du batch, grille d'éval, GSD 0.4 vs 0.8, workers |
-| `tests/test_model.py` | losses finies, loss topo à 0 sans route, paliers de LR (CPU, faux checkpoint) |
-| `tests/test_config.py` | conversion mètres → pixels, loaders construits depuis la config, provenance |
+`just unit` lance les tests de calculs sur de petits tenseurs/tableaux, sans construire SAM et
+sans générer de dataset : losses et gradients, grille et tirage des fenêtres, restauration du
+RNG NumPy, visibilité des paires et collate. Un test d’import vérifie que ces modules, ainsi que
+`raster.py`, fonctionnent même si le sous-module SAM-Road est absent et sans charger Lightning.
+
+`just test` couvre aussi les intégrations : labels via l’adaptateur amont, petits rasters
+(en mémoire et fichiers temporaires), GeoParquet synthétique, DataLoader multi-workers,
+modèle ViT-B avec checkpoint factice et script de copie NVMe avec `rsync` simulé.
+Les marqueurs `integration` et `slow` permettent une sélection supplémentaire avec pytest.
+
+Les tests raster vérifient le géoréférencement, les masques GDAL et le cycle de vie du cache
+(éviction, pickle et changement de processus). Les tests du modèle conservent la vérification
+du branchement des losses, des métriques et du scheduler ; les cas numériques des losses sont
+testés séparément dans `tests/test_losses.py`.
+
+Les graines topologiques sont explicites : une graine par exemple de validation, et des graines
+tirées du RNG local du worker en entraînement. L’adaptateur restaure l’état NumPy global même
+si SAM-Road lève une exception. Cette isolation s’utilise par processus, pas depuis plusieurs
+threads. La séquence de tirage en entraînement change par rapport aux versions précédentes ;
+une reprise de checkpoint conserve les poids, mais ne reproduit pas leur ancienne séquence.
 
 ## Qualité du code
 

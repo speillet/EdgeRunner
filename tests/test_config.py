@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from hydra import compose, initialize_config_dir
 from omegaconf import OmegaConf
 
@@ -24,6 +25,7 @@ def test_metres_follow_gsd() -> None:
     assert (m["PATCH_SIZE"], m["NEIGHBOR_RADIUS"], m["ROAD_NMS_RADIUS"]) == (512, 80, 20)
 
 
+@pytest.mark.integration
 def test_loaders_from_config(toy: Path) -> None:
     c = cfg(
         f"data_root={toy}",
@@ -39,6 +41,7 @@ def test_loaders_from_config(toy: Path) -> None:
     assert len(val_dl.dataset) == 2
 
 
+@pytest.mark.integration
 def test_provenance(toy: Path) -> None:
     p = provenance(str(toy))
     assert len(p["commit"]) == len(p["sam_road"]) == 40  # this repo and its submodule

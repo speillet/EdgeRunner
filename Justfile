@@ -31,6 +31,10 @@ test:
     uv run ruff format --check src tests
     uv run pyright
 
+# calculs en mémoire : pas de checkpoint, de dataset sur disque ni de modèle SAM
+unit:
+    uv run pytest -q tests/test_losses.py tests/test_sampling.py tests/test_transforms.py tests/test_batch.py tests/test_imports.py
+
 # format and auto-fix the code
 fmt:
     uv run ruff format src tests
