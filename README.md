@@ -31,7 +31,7 @@ utile du COG et les routes de la dalle, et fabrique les labels de chaque patch a
 
 ```text
 EdgeRunner/
-├── Justfile                     [ER] une recette par action : setup, toy, test, fmt, dev, train, smoke, cluster
+├── Justfile                     [ER] une recette par action : setup, toy, test, fmt, dev, train, smoke, index, cluster
 ├── pyproject.toml / uv.lock     [ER] paquet `edgerunner`, dépendances figées (uv), config ruff et pyright
 ├── .python-version              [ER] Python 3.12, le même partout (local, cluster, CI)
 ├── .pre-commit-config.yaml      [ER] hooks avant chaque commit (ruff, format, YAML, gros fichiers)
@@ -50,6 +50,7 @@ EdgeRunner/
 │   │   ├── transforms.py             visibilité des paires topologiques
 │   │   ├── types.py                  contrats TypedDict : Targets, Sample, Batch
 │   │   ├── batch.py                  collate typé, padding des points
+│   │   ├── index.py                  tiles.parquet + windows.parquet, folds de road_graph_extractor
 │   │   └── toy.py                    générateur de données synthétiques au format réel
 │   ├── models/
 │   │   ├── losses.py                 losses sur tenseurs, sans SAM ni Lightning
@@ -57,8 +58,10 @@ EdgeRunner/
 │   ├── train.py                      point d'entrée Hydra (loaders, modèle, Trainer, provenance, ClearML)
 │   └── smoke.py                      overlays PNG, stats des labels, débit du DataLoader
 ├── tests/                       [ER] tests CPU sur le jeu synthétique (pytest)
-├── sbatch/train_samroad.sh      [ER] job SLURM : préparation puis DDP 2 × 3 A40
-├── sbatch/stage_data.sh         [ER] copie NVMe sur un nœud, testable sans SLURM
+├── sbatch/                      [ER] jobs SLURM du cluster interne (1 nœud × 3 A40)
+│   ├── smoke.slurm / dev.slurm / train.slurm   un fichier par job, lisible seul
+│   ├── common.sh                     commun : environnement, index, copie sur le NVMe
+│   └── stage_data.sh                 copie NVMe sur un nœud, testable sans SLURM
 ├── third_party/sam_road/        [SR] submodule htcr/sam_road, figé, jamais modifié
 │   ├── model.py                      réseau SAMRoad, losses, métriques, optimiseur      → utilisé
 │   ├── dataset.py                    GraphLabelGenerator (cibles topo) ; SatMapDataset  → en partie
@@ -142,7 +145,7 @@ Un seul fichier, [configs/train.yaml](configs/train.yaml). Toute clé se surchar
 | `data_root` | `data` | dossier des données (arborescence ci-dessous) |
 | `gsd` / `patch_size` | 0.4 / 1024 | résolution vue par le modèle et taille du patch (410 m de côté) |
 | `neighbor_radius_m` | 64 | rayon du voisinage topologique, et marge de dessin des labels |
-| `data.train_folds` / `data.val_folds` | 0–3 / 4 | folds de `tiles.parquet` utilisés |
+| `data.train_folds` / `data.val_folds` | 1–4 / 0 | folds de `tiles.parquet` utilisés (comme les runs DeH4R) |
 | `data.labels.road_width_m` | 3.0 | largeur du masque route ; `null` = largeur BD TOPO |
 | `model.*` | clés amont | config SAM-Road (LR, nombre d'échantillons topo…) ; rayons en `${px:…}` |
 | `trainer.*` | 1 GPU, 16-mixed | arguments de `lightning.Trainer` (`fast_dev_run`, `strategy`…) |
@@ -163,7 +166,8 @@ Les distances sont écrites en mètres et converties par `${px:m,${gsd}}`. Passe
 | `just dev [clé=valeur…]` | 2 batchs sur le toy à 0.8 m / 512 px (tient sur 12 Go) |
 | `just train data_root=/data [clé=valeur…]` | entraînement |
 | `just smoke data_root=/data` | overlays PNG, stats des labels, débit (`outputs/smoke`) |
-| `just cluster [train\|dev\|smoke]` | job SLURM : données lues dans `$DS`, le store partagé (voir l'en-tête de `sbatch/train_samroad.sh`) |
+| `just index <cog_dir> <out>` | index des COG avec les folds de road_graph_extractor |
+| `just cluster [smoke\|dev\|train] [clé=valeur…]` | job SLURM `sbatch/<mode>.slurm` : données lues dans `$DS`, le store partagé (voir § Cluster) |
 
 Sur une carte de 12 Go, 1024 px ne passe qu'en batch 1 (sinon `gsd=0.8 patch_size=512`).
 
@@ -178,6 +182,26 @@ data_root/
 ```
 
 Les vraies données sont produites par road_graph_extractor (seuls les fichiers sont utilisés).
+Tant que son index n'est pas copié sur le store, `just index` le reconstruit à l'identique :
+40 zones bretonnes de 5 dalles, folds `0`…`4` (29 à 39 dalles chacun), `test` (20 dalles, une
+zone par département, jamais utilisé pendant la mise au point) et `ext_test` (69 dalles
+annotées de 14 autres départements). Vérifié sur `$DS/runs/1357/eval_fold0` et sur les
+effectifs de sa documentation (259 dalles, 54 zones, 37 296 fenêtres).
+
+## Cluster
+
+```bash
+just cluster smoke     # CPU : overlays + débit depuis le NVMe ($OUT/smoke)
+just cluster dev       # 2 batchs par GPU en DDP 3 × A40 : valide l'enchaînement
+just cluster train     # entraînement complet, 48 h max
+just cluster train ckpt_path=$DS/runs/samroad_<job>/ckpt/last.ckpt   # reprise
+```
+
+Chaque job lit `DS=/mnt/stores/store-DAI/pocs/datasets/road_graph_extractor` (modifiable par
+variable d'environnement), prend l'index officiel s'il existe dans `$DS/index`, sinon le
+reconstruit dans le dossier du run, copie les COG des folds 0–4 sur le NVMe du nœud (copie
+incrémentale, longue la première fois) et écrit tout dans `$DS/runs/samroad_<job>`. Journal :
+`logs/<job>_<id>.out` ; ClearML actif si `CLEARML_*` est dans `.env` (`CLEARML=0` pour couper).
 `just toy` génère la même arborescence avec des dalles factices.
 
 ## Sorties d'un run

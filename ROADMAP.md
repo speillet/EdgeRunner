@@ -14,6 +14,8 @@
   réussis, Ruff/formatage/Pyright et syntaxe Bash validés. Exécution SLURM à vérifier.
 - **Modularisation du 2026-10-29** : calcul des losses, lecture raster, choix des fenêtres,
   visibilité et collate isolés ; contrats typés ; script NVMe autonome ; RNG NumPy restauré.
+- **Cluster interne du 2026-10-29** (CP6d) : un `.slurm` par job, 1 nœud × 3 A40, index
+  reconstruit avec les folds de road_graph_extractor (train 1–4, val 0, `test` exclu).
   Validation : 52 tests dont 12 via `just unit` ; qualité du code et syntaxe Bash validées.
 - **Prochain** : **CP7** (validation sur vraies dalles, accès au cluster SLURM requis).
   Sans accès au cluster : faire **CP9** (inférence sur dalle entière) sur le jeu toy.
@@ -72,15 +74,16 @@ just toy && just dev         # exit 0
 | `src/edgerunner/data/types.py`, `batch.py`, `transforms.py` | Contrats typés, collate et visibilité des paires |
 | `src/edgerunner/models/losses.py` | Losses sur tenseurs, sans SAM ni Lightning |
 | `src/edgerunner/data/toy.py` | Jeu synthétique au même format que les vraies données |
+| `src/edgerunner/data/index.py` | `tiles.parquet` / `windows.parquet` des COG, folds identiques à ceux de road_graph_extractor (zones, graine 0) |
 | `src/edgerunner/models/sam_road.py` | `SAMRoadModule(SAMRoad)` |
 | `src/edgerunner/train.py` | `@hydra.main` : construction explicite (pas de `_target_`), `build_loaders(cfg)`, `provenance(data_root)`, ClearML optionnel |
 | `src/edgerunner/smoke.py` | Overlays PNG, stats des labels, débit du DataLoader |
 | `configs/train.yaml` | **La** config : `data_root`, `gsd`, `patch_size`, sections `data`, `model` (clés amont), `trainer` |
-| `Justfile` | `setup`, `submodules`, `toy`, `test`, `fmt`, `dev`, `train`, `smoke`, `cluster [train\|dev\|smoke]` |
+| `Justfile` | `setup`, `submodules`, `toy`, `test`, `fmt`, `dev`, `train`, `smoke`, `index`, `cluster [smoke\|dev\|train]` |
 | `.github/workflows/ci.yml` | CI : `just submodules`, `uv sync --locked --extra clearml`, `just test`, hooks pre-commit |
 | `.pre-commit-config.yaml` | hooks : YAML/TOML, fin de fichier, espaces, gros fichiers, ruff check + format (version de uv.lock) |
 | `LICENSE`, `CITATION.cff` | MIT ; citation du dépôt + SAM-Road + Segment Anything |
-| `sbatch/train_samroad.sh`, `stage_data.sh` | SLURM et script de copie NVMe testable séparément |
+| `sbatch/{smoke,dev,train}.slurm`, `common.sh`, `stage_data.sh` | Un job SLURM par fichier ; partie commune (env, index, copie) ; copie NVMe testable séparément |
 
 ## 3. Contrats à ne pas casser
 
@@ -123,6 +126,12 @@ just toy && just dev         # exit 0
   `ruff format` ; pyright 0 erreur ; provenance des runs dans les hparams ; licence MIT +
   CITATION.cff ; CI GitHub Actions. *Preuve* : `just test` (26 passed), badge CI vert, checkpoint
   rechargé avec `load_from_checkpoint` et sa provenance.
+- [x] **CP6d — Jobs du cluster interne** : `sbatch/{smoke,dev,train}.slurm` (1 nœud × 3 A40,
+  `DS=/mnt/stores/store-DAI/…`), `sbatch/common.sh`, `edgerunner.data.index` (folds de
+  road_graph_extractor reconstruits), défauts `train_folds` 1–4 / `val_folds` 0.
+  *Preuve* : `just test` (54 passed) ; index = 259 dalles, 54 zones, 37 296 fenêtres comme sa
+  doc, les 36 dalles de `$DS/runs/1357/eval_fold0` en fold 0 ; `train.slurm` et `smoke.slurm`
+  simulés hors SLURM (faux `srun`). **Jamais soumis au vrai SLURM.**
 
 ## 5. Checkpoints à venir
 
@@ -131,13 +140,14 @@ just toy && just dev         # exit 0
   `$DS=/mnt/stores/store_dai/pocs/datasets/road_graph_extractor` (chemin sur le serveur de
   l'utilisateur, défaut du sbatch) : `cog/` (259 COG), `bdtopo/bretagne/troncon/`,
   `bdtopo/annot_depts/troncon/`, `annotations/`, `runs/` (DeH4R), `checkpoints/` (SAM ViT-B déposé
-  le 2026-10-28). **Index manquant** : `tiles.parquet` / `windows.parquet` n'existent que dans le
-  `data/index/` du clone road_graph_extractor de MZellou (cf. `$DS/runs/1349/config.yml`) ; ils
-  doivent être copiés dans `$DS/index/` (avec `selected_tiles.csv`), défaut de `INDEX_DIR`.
+  le 2026-10-28). Sur les nœuds du cluster : `DS=/mnt/stores/store-DAI/pocs/datasets/road_graph_extractor`.
+  **Index officiel absent** de `$DS/index/` : les jobs le reconstruisent alors dans
+  `$OUT/index` (`edgerunner.data.index`, mêmes folds), et prendront l'officiel dès sa copie.
 - **Déjà validé en local (2026-10-28)** sur 6 vraies dalles copiées dans `data/ign/` (5 autour de
   Rennes en train, 1 à Saint-Brieuc en val) avec un **index de test provisoire** : lecture BD TOPO
   réelle OK, overlays alignés, 109 exemples/s avec 8 workers, entraînement de 3 époques × 600
-  patches (0.4 m, 1024 px, batch 1 sur A2000) sans erreur, val_loss 0.092 → 0.071.
+  patches (0.4 m, 1024 px, batch 1 sur A2000) sans erreur, val_loss 0.092 → 0.071. Ces 6 dalles
+  sont toutes dans le fold `test` de road_graph_extractor : chiffres de mise au point seulement.
 - **Étapes** :
   1. Cloner EdgeRunner sur le cluster, initialiser le submodule (commandes du README).
   2. `just cluster smoke` (1 nœud : copie NVMe puis `edgerunner.smoke`,
@@ -146,7 +156,7 @@ just toy && just dev         # exit 0
      `geometry` (binaire ou extension Parquet GEOMETRY, gérée par `_wkb`) et présence de `bbox`.
   4. Faire relire les overlays par l'utilisateur : masques sur les routes (décalage BD TOPO d'environ
      2.5 m attendu), keypoints aux carrefours, rien sur les ponts.
-  5. `just cluster dev` sur 2 nœuds.
+  5. `just cluster dev` (1 nœud × 3 A40), puis `just cluster train`.
 - **Fini quand** : overlays validés ; débit en échantillons/s mesuré depuis le NVMe et ≥ besoin
   des GPU (3 × batch × it/s par nœud) ; taux de patchs sans route noté ; run DEV terminé avec le
   code 0 ; tâche ClearML visible. Chiffres reportés au §7.
@@ -251,3 +261,4 @@ just toy && just dev         # exit 0
 | 2026-10-28 | CP7 (local) | Claude (Opus) | Vraies dalles (index de test provisoire, 6 dalles) : smoke 109 ex/s, 3 époques en 15 min à 2 it/s, val_loss 0.092 → 0.071, road_iou@0.5 encore ≈ 0 (carte de route déjà visible sous 0.5) : entraînement trop court, à prolonger sur le cluster. |
 | 2026-10-29 | Revue | Codex | Exclusion des pixels sans image des losses/IoU et des extrémités topo invalides ; cache raster LRU avec fermeture ; propagation des échecs rsync parallèles. 36 tests réussis, Ruff/formatage/Pyright OK, syntaxe Bash valide ; copie simulée hors SLURM. |
 | 2026-10-29 | Modularisation | Codex | Losses indépendantes de SAM/Lightning, lecture/cache raster et sampling séparés, visibilité/collate typés, RNG amont isolé et script NVMe extrait. 52 tests CPU dont 12 unitaires sans dataset/checkpoint ; Ruff, formatage, Pyright et syntaxe Bash validés. SLURM non exécuté. |
+| 2026-10-29 | CP6d | Claude (Opus) | Folds de road_graph_extractor reconstruits (259 dalles, 54 zones, 37 296 fenêtres, `eval_fold0` vérifié) dans `edgerunner.data.index` ; un `.slurm` par job sur 1 nœud × 3 A40 ; jobs simulés hors SLURM. Run local de nuit sur 190 dalles arrêté (il utilisait des folds provisoires incluant le fold `test`). |

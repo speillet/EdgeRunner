@@ -56,6 +56,7 @@ smoke *args:
 index *args:
     uv run python -m edgerunner.data.index {{args}}
 
-# SLURM job, mode = train | dev | smoke (data from $DS, see sbatch/train_samroad.sh)
+# SLURM job on the internal cluster, mode = smoke | dev | train (sbatch/<mode>.slurm)
 cluster mode="train" *args:
-    MODE={{mode}} sbatch {{ if mode == "smoke" { "--nodes=1" } else { "" } }} sbatch/train_samroad.sh {{args}}
+    mkdir -p logs
+    sbatch sbatch/{{mode}}.slurm {{args}}

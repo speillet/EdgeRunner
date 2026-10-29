@@ -46,7 +46,7 @@ def main() -> None:
     p.add_argument("--overlays", type=int, default=8)
     p.add_argument("--batches", type=int, default=50, help="train batches timed")
     p.add_argument("overrides", nargs="*", help="Hydra overrides, e.g. data_root=data/toy")
-    a = p.parse_args()
+    a = p.parse_intermixed_args()  # options may follow the overrides (sbatch/smoke.slurm)
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     with initialize_config_dir(str(CONFIGS), version_base="1.3"):
