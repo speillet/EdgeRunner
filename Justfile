@@ -48,6 +48,6 @@ train *args:
 smoke *args:
     uv run python -m edgerunner.smoke {{args}}
 
-# SLURM job, mode = train | dev | smoke: INDEX_DIR=/path/to/index just cluster dev
+# SLURM job, mode = train | dev | smoke (data from $DS, see sbatch/train_samroad.sh)
 cluster mode="train" *args:
     MODE={{mode}} sbatch {{ if mode == "smoke" { "--nodes=1" } else { "" } }} sbatch/train_samroad.sh {{args}}

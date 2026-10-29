@@ -1,10 +1,10 @@
 #!/bin/bash
 # SAM-Road on IGN data: copies the data to each node's NVMe, then NODES x 3 A40 DDP.
-#   INDEX_DIR=/path/to/index just cluster [train|dev|smoke] [hydra overrides...]
-#   (or: INDEX_DIR=... MODE=dev sbatch sbatch/train_samroad.sh data.batch_size=8)
-# Env: INDEX_DIR (tiles.parquet + windows.parquet, required), DS (store with cog/, bdtopo/,
-# checkpoints/), NVME, OUT (default $DS/runs/samroad_<job>), FOLDS (folds whose COGs are copied),
-# CLEARML (1/0, keys CLEARML_* in .env), RUN_NAME.
+#   just cluster [train|dev|smoke] [hydra overrides...]
+#   (or: MODE=dev sbatch sbatch/train_samroad.sh data.batch_size=8)
+# Env: DS (dataset store with cog/, bdtopo/, checkpoints/, index/), INDEX_DIR (default
+# $DS/index: tiles.parquet + windows.parquet), NVME, OUT (default $DS/runs/samroad_<job>),
+# FOLDS (folds whose COGs are copied), CLEARML (1/0, keys CLEARML_* in .env), RUN_NAME.
 #SBATCH --job-name=samroad-ign
 #SBATCH --partition=jz,jz-nvme
 #SBATCH --nodes=2
@@ -19,8 +19,9 @@ set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
 if [ -f .env ]; then set -a; source .env; set +a; fi
 MODE=${MODE:-train}
-DS=${DS:-/media/stores/cifs/store-DAI/pocs/datasets/road_graph_extractor}
-INDEX_DIR=${INDEX_DIR:?set INDEX_DIR to the folder holding tiles.parquet and windows.parquet}
+DS=${DS:-/mnt/stores/store_dai/pocs/datasets/road_graph_extractor}
+INDEX_DIR=${INDEX_DIR:-$DS/index}
+[ -f "$INDEX_DIR/tiles.parquet" ] || { echo "missing $INDEX_DIR/tiles.parquet (set INDEX_DIR)"; exit 1; }
 NVME=${NVME:-/var/nvme/$USER/edgerunner}
 OUT=${OUT:-$DS/runs/samroad_$SLURM_JOB_ID}
 FOLDS=${FOLDS:-0 1 2 3 4}

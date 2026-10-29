@@ -150,7 +150,7 @@ Les distances sont écrites en mètres et converties par `${px:m,${gsd}}`. Passe
 | `just dev [clé=valeur…]` | 2 batchs sur le toy à 0.8 m / 512 px (tient sur 12 Go) |
 | `just train data_root=/data [clé=valeur…]` | entraînement |
 | `just smoke data_root=/data` | overlays PNG, stats des labels, débit (`outputs/smoke`) |
-| `INDEX_DIR=… just cluster [train\|dev\|smoke]` | job SLURM (voir l'en-tête de `sbatch/train_samroad.sh`) |
+| `just cluster [train\|dev\|smoke]` | job SLURM : données lues dans `$DS`, le store partagé (voir l'en-tête de `sbatch/train_samroad.sh`) |
 
 Sur une carte de 12 Go, 1024 px ne passe qu'en batch 1 (sinon `gsd=0.8 patch_size=512`).
 
