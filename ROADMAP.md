@@ -118,19 +118,26 @@ just toy && just dev         # exit 0
 ## 5. Checkpoints à venir
 
 ### CP7 — Validation sur vraies données (cluster) ⟵ PROCHAIN
-- **Prérequis** : accès SLURM. `INDEX_DIR` = dossier de `tiles.parquet` / `windows.parquet`
-  produit par `road_graph_extractor` (si le chemin est inconnu, le demander à l'utilisateur).
-  `$DS=/media/stores/cifs/store-DAI/pocs/datasets/road_graph_extractor`. Checkpoint SAM à poser
-  dans `$DS/checkpoints/sam_vit_b_01ec64.pth`.
+- **Prérequis** : accès SLURM. Store partagé
+  `$DS=/mnt/stores/store_dai/pocs/datasets/road_graph_extractor` (chemin sur le serveur de
+  l'utilisateur, défaut du sbatch) : `cog/` (259 COG), `bdtopo/bretagne/troncon/`,
+  `bdtopo/annot_depts/troncon/`, `annotations/`, `runs/` (DeH4R), `checkpoints/` (SAM ViT-B déposé
+  le 2026-10-28). **Index manquant** : `tiles.parquet` / `windows.parquet` n'existent que dans le
+  `data/index/` du clone road_graph_extractor de MZellou (cf. `$DS/runs/1349/config.yml`) ; ils
+  doivent être copiés dans `$DS/index/` (avec `selected_tiles.csv`), défaut de `INDEX_DIR`.
+- **Déjà validé en local (2026-10-28)** sur 6 vraies dalles copiées dans `data/ign/` (5 autour de
+  Rennes en train, 1 à Saint-Brieuc en val) avec un **index de test provisoire** : lecture BD TOPO
+  réelle OK, overlays alignés, 109 exemples/s avec 8 workers, entraînement de 3 époques × 600
+  patches (0.4 m, 1024 px, batch 1 sur A2000) sans erreur, val_loss 0.092 → 0.071.
 - **Étapes** :
   1. Cloner EdgeRunner sur le cluster, initialiser le submodule (commandes du README).
-  2. `INDEX_DIR=… just cluster smoke` (1 nœud : copie NVMe puis `edgerunner.smoke`,
+  2. `just cluster smoke` (1 nœud : copie NVMe puis `edgerunner.smoke`,
      overlays dans `$OUT/smoke`).
   3. Vérifier que `read_roads` lit le GeoParquet réel (écrit par DuckDB 1.5) : type de la colonne
      `geometry` (binaire ou extension Parquet GEOMETRY, gérée par `_wkb`) et présence de `bbox`.
   4. Faire relire les overlays par l'utilisateur : masques sur les routes (décalage BD TOPO d'environ
      2.5 m attendu), keypoints aux carrefours, rien sur les ponts.
-  5. `INDEX_DIR=… just cluster dev` sur 2 nœuds.
+  5. `just cluster dev` sur 2 nœuds.
 - **Fini quand** : overlays validés ; débit en échantillons/s mesuré depuis le NVMe et ≥ besoin
   des GPU (3 × batch × it/s par nœud) ; taux de patchs sans route noté ; run DEV terminé avec le
   code 0 ; tâche ClearML visible. Chiffres reportés au §7.
@@ -231,3 +238,4 @@ just toy && just dev         # exit 0
 | 2026-10-28 | CP0–CP6 | Claude (Opus) | Pipeline écrit et testé sur le toy. Dataset : 49 ms/échantillon à 1024 px (1 processus), 110 échantillons/s avec 4 workers. A2000 : 1.65 it/s en batch 1 à 1024 (16-mixed), OOM en batch 2. Repère (autres labels, DeH4R) : 67 échantillons/s depuis le NVMe contre 4 depuis CIFS avec 8 workers. |
 | 2026-10-28 | CP6b | Claude (Opus) | Simplification validée : 25 tests, `just dev`, mini-run (ckpt + TB), smoke toy 148 échantillons/s avec 4 workers. |
 | 2026-10-28 | CP6c | Claude (Opus) | Bonnes pratiques : CI, pre-commit, pyright, provenance, cu126, licence MIT. 6 erreurs ruff masquées par l'ancien `.gitignore` corrigées. |
+| 2026-10-28 | CP7 (local) | Claude (Opus) | Vraies dalles (index de test provisoire, 6 dalles) : smoke 109 ex/s, 3 époques en 15 min à 2 it/s, val_loss 0.092 → 0.071, road_iou@0.5 encore ≈ 0 (carte de route déjà visible sous 0.5) : entraînement trop court, à prolonger sur le cluster. |
