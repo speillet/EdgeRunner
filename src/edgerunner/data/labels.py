@@ -19,6 +19,7 @@ import shapely
 from .. import px
 from .._sam_road import graph_utils, sam_dataset
 from .roads import Roads
+from .sampling import numpy_seed
 
 Graph = dict[tuple[int, int], list[tuple[int, int]]]  # sat2graph adjacency, (row, col) nodes
 
@@ -137,7 +138,14 @@ class WindowGraphLabeler(sam_dataset.GraphLabelGenerator):
 
 
 def topo_labels(
-    sam_cfg: Any, labels: WindowLabels, size: int, gsd: float, cfg: LabelConfig, rot: int = 0
+    sam_cfg: Any,
+    labels: WindowLabels,
+    size: int,
+    gsd: float,
+    cfg: LabelConfig,
+    rot: int = 0,
+    *,
+    seed: int | None = None,
 ) -> tuple[np.ndarray, list[Any]]:
     """`sample_patch` on the patch: points (x, y) in the patch frame + (pairs, connected, valid)."""
     gen = WindowGraphLabeler(
@@ -148,4 +156,5 @@ def topo_labels(
         cfg.interesting_m / gsd,
     )
     m = labels.margin
-    return gen.sample_patch(((m, m), (m + size, m + size)), rot_index=rot)
+    with numpy_seed(seed):
+        return gen.sample_patch(((m, m), (m + size, m + size)), rot_index=rot)

@@ -11,7 +11,6 @@ from __future__ import annotations
 import os
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
-from math import ceil
 from pathlib import Path
 from typing import Any
 
@@ -20,22 +19,17 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 
-# HTTP/S3 COGs later: no directory listing on open, cached ranges
-os.environ.setdefault("GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR")
-os.environ.setdefault("VSI_CACHE", "TRUE")
-
-import rasterio  # noqa: E402
-from affine import Affine  # noqa: E402
-from rasterio.enums import Resampling  # noqa: E402
-from rasterio.windows import Window  # noqa: E402
-from rasterio.windows import transform as window_transform  # noqa: E402
-
-from .. import px  # noqa: E402
-from .labels import LabelConfig, render_window, topo_labels  # noqa: E402
-from .roads import Roads, read_roads  # noqa: E402
+from .. import px
+from .batch import collate as collate
+from .labels import LabelConfig, render_window, topo_labels
+from .raster import RasterReader
+from .roads import Roads, read_roads
+from .sampling import eval_grid, random_window
+from .transforms import visible_pairs
+from .types import Sample
 
 
-class IGNSamRoadDataset(Dataset):
+class IGNSamRoadDataset(Dataset[Sample]):
     """Map-style dataset returning SAM-Road's batch items (see `read`).
 
     mode="train": random window in a random tile of `folds` (weighted by valid area), random rot90.
@@ -70,9 +64,7 @@ class IGNSamRoadDataset(Dataset):
         self.root = str(root).rstrip("/")  # str: may become an http(s) prefix later
         self.samples_per_epoch, self.min_valid = samples_per_epoch, min_valid
         self.roads_cache_size = roads_cache_size
-        if raster_cache_size < 1:
-            raise ValueError("raster_cache_size must be >= 1")
-        self.raster_cache_size = raster_cache_size
+        self.rasters = RasterReader(f"{self.root}/cog", raster_cache_size)
 
         self.patch = int(self.sam_cfg.PATCH_SIZE)
         native = self.patch * gsd / native_gsd
@@ -91,10 +83,10 @@ class IGNSamRoadDataset(Dataset):
         self.tile_pos = {t: i for i, t in enumerate(self.tiles["tile_id"])}
         w = np.asarray(self.tiles["valid_frac"], dtype=float)
         self.tile_p = w / w.sum()
+        self.tile_shapes = list(zip(self.tiles["height"], self.tiles["width"], strict=True))
         self.patches = self._eval_patches(folds, max_patches) if mode == "eval" else []
 
         self._pid: int | None = None
-        self._src: OrderedDict[str, Any] = OrderedDict()
         self._roads: OrderedDict[str, Roads] = OrderedDict()
         self._rng: np.random.Generator | None = None
 
@@ -108,23 +100,21 @@ class IGNSamRoadDataset(Dataset):
             columns=["tile_id", "fold", "row_off", "col_off", "size"],
         )
         wins = wins[wins["fold"].astype(str).isin(folds) & wins["tile_id"].isin(self.tile_pos)]
-        s, out = self.native, []
-        for tile_id, r0, c0, size in np.asarray(wins[["tile_id", "row_off", "col_off", "size"]]):
-            if size < s:
-                continue
-            offs = np.linspace(0, size - s, ceil(size / s)).round().astype(int)
-            out += [(tile_id, int(r0 + dr), int(c0 + dc)) for dr in offs for dc in offs]
-        if max_patches and len(out) > max_patches:  # fixed subset, same every epoch
-            keep = np.random.default_rng(self.seed).choice(len(out), max_patches, replace=False)
-            out = [out[i] for i in sorted(keep)]
-        return out
+        return eval_grid(
+            [
+                (str(t), int(r), int(c), int(s))
+                for t, r, c, s in np.asarray(wins[["tile_id", "row_off", "col_off", "size"]])
+            ],
+            self.native,
+            self.seed,
+            max_patches,
+        )
 
     def __getstate__(self) -> dict[str, Any]:
         # workers (fork / forkserver) start without open handles
         return {
             **self.__dict__,
             "_pid": None,
-            "_src": OrderedDict(),
             "_roads": OrderedDict(),
             "_rng": None,
         }
@@ -146,23 +136,7 @@ class IGNSamRoadDataset(Dataset):
         self._rng = np.random.default_rng([torch.initial_seed(), rank])
 
     def close(self) -> None:
-        """Release this process's cached raster handles."""
-        for src in self._src.values():
-            src.close()
-        self._src.clear()
-
-    def __del__(self) -> None:
-        if hasattr(self, "_src"):
-            self.close()
-
-    def _open(self, uri: str) -> Any:
-        if uri not in self._src:
-            self._src[uri] = rasterio.open(f"{self.root}/cog/{uri}")
-        self._src.move_to_end(uri)
-        if len(self._src) > self.raster_cache_size:
-            _, evicted = self._src.popitem(last=False)
-            evicted.close()
-        return self._src[uri]
+        self.rasters.close()
 
     def _tile_roads(self, tile: Any) -> Roads:
         roads = self._roads.get(tile.tile_id)
@@ -178,61 +152,45 @@ class IGNSamRoadDataset(Dataset):
         self._roads.move_to_end(tile.tile_id)
         return roads
 
-    def _window(self, r: int, c: int) -> Window:
-        s = self.native
-        return Window.from_slices((r, r + s), (c, c + s))
-
-    def _valid_frac(self, tile: Any, r: int, c: int) -> float:
-        """Share of non-nodata pixels (any band != 0), read from a coarse overview."""
-        ov = self._open(tile.uri).read((1, 2, 3), window=self._window(r, c), out_shape=(3, 32, 32))
-        return float(np.any(ov != 0, axis=0).mean())
-
     def _random_window(self) -> tuple[Any, int, int]:
         assert self._rng is not None
-        s, tries = self.native, 0
-        while True:  # up to 20 draws to reach min_valid, else the last one
-            tile = self.tiles.iloc[self._rng.choice(len(self.tiles), p=self.tile_p)]
-            r = int(self._rng.integers(0, tile["height"] - s + 1))
-            c = int(self._rng.integers(0, tile["width"] - s + 1))
-            tries += 1
-            if tries == 20 or self._valid_frac(tile, r, c) >= self.min_valid:
-                return tile, r, c
+        index, row, col = random_window(
+            self.tile_shapes,
+            self.tile_p,
+            self.native,
+            self._rng,
+            lambda i, r, c: self.rasters.valid_fraction(self.tiles.iloc[i].uri, r, c, self.native),
+            self.min_valid,
+        )
+        return self.tiles.iloc[index], row, col
 
-    def __getitem__(self, idx: int) -> dict[str, Any]:
+    def __getitem__(self, idx: int) -> Sample:
         self._check_process()
         if self.mode == "train":
             assert self._rng is not None
             tile, r, c = self._random_window()
             return self.read(tile, r, c, rot=int(self._rng.integers(4)))
         tile_id, r, c = self.patches[idx]
-        np.random.seed((self.seed + idx) % 2**32)  # upstream sample_patch draws from np.random
-        return self.read(self.tile(tile_id), r, c)
+        return self.read(self.tile(tile_id), r, c, topo_seed=(self.seed + idx) % 2**32)
 
-    def read(self, tile: Any, r: int, c: int, rot: int = 0) -> dict[str, Any]:
+    def read(self, tile: Any, r: int, c: int, rot: int = 0, topo_seed: int | None = None) -> Sample:
         """Patch whose top-left COG pixel is (r, c) in `tile`, rotated `rot` × 90° CCW."""
         self._check_process()
         s, p = self.native, self.patch
-        src = self._open(tile.uri)
-        win = self._window(r, c)
-        rgb = src.read((1, 2, 3), window=win, out_shape=(3, p, p), resampling=Resampling.average)
-        # Honour GDAL masks and the IGN all-zero RGB convention (also used by the toy).
-        pixel_valid = np.any(rgb != 0, axis=0) & (
-            src.dataset_mask(window=win, out_shape=(p, p), resampling=Resampling.nearest) > 0
+        patch = self.rasters.read(tile.uri, r, c, s, p)
+        lab = render_window(self._tile_roads(tile), ~patch.transform, p, self.gsd, self.labels)
+        if topo_seed is None:
+            assert self._rng is not None
+            topo_seed = int(self._rng.integers(2**32))
+        points, samples = topo_labels(
+            self.sam_cfg, lab, p, self.gsd, self.labels, rot, seed=topo_seed
         )
-        patch_tf = window_transform(win, src.transform) @ Affine.scale(s / p)
-        lab = render_window(self._tile_roads(tile), ~patch_tf, p, self.gsd, self.labels)
-        points, samples = topo_labels(self.sam_cfg, lab, p, self.gsd, self.labels, rot)
         pairs, connected, valid = (np.asarray(x) for x in zip(*samples, strict=True))
-        pixel_valid = np.ascontiguousarray(np.rot90(pixel_valid, rot))
-        # No topology supervision when either sampled endpoint is outside visible imagery.
-        point_rc = np.floor(points[:, ::-1] + 0.5).astype(int)
-        inside = ((point_rc >= 0) & (point_rc < p)).all(axis=1)
-        rc = np.clip(point_rc, 0, p - 1)
-        point_valid = inside & pixel_valid[rc[:, 0], rc[:, 1]]
-        valid &= point_valid[pairs].all(axis=-1)
+        pixel_valid = np.ascontiguousarray(np.rot90(patch.pixel_valid, rot))
+        valid &= visible_pairs(points, pairs, pixel_valid)
         rgb, road, kp = (
             np.ascontiguousarray(np.rot90(a, rot, (0, 1)))
-            for a in (np.moveaxis(rgb, 0, -1), lab.road_mask, lab.keypoint_mask)
+            for a in (patch.rgb, lab.road_mask, lab.keypoint_mask)
         )
         return {
             "rgb": torch.from_numpy(rgb),  # uint8 [P, P, 3], cast by the module on the GPU
@@ -248,24 +206,6 @@ class IGNSamRoadDataset(Dataset):
             "col_off": c,
             "rot": rot,
         }
-
-
-def collate(batch: list[dict[str, Any]]) -> dict[str, Any]:
-    """Stacks tensors, zero-pads `graph_points` (as sam_road), keeps metadata as lists.
-
-    Module-level so that forkserver workers can pickle it.
-    """
-    out: dict[str, Any] = {}
-    for key in batch[0]:
-        vals = [item[key] for item in batch]
-        if key == "graph_points":
-            n = max(v.shape[0] for v in vals)
-            out[key] = torch.stack([torch.cat([v, v.new_zeros(n - v.shape[0], 2)]) for v in vals])
-        elif isinstance(vals[0], torch.Tensor):
-            out[key] = torch.stack(vals)
-        else:
-            out[key] = vals
-    return out
 
 
 def make_loaders(

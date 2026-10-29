@@ -11,6 +11,8 @@ from affine import Affine
 from edgerunner.data.labels import LabelConfig, WindowGraphLabeler, render_window, topo_labels
 from edgerunner.data.roads import Roads
 
+pytestmark = pytest.mark.integration
+
 GSD, P = 0.4, 256
 INV = ~(Affine.translation(1000, 2000) @ Affine.scale(GSD, -GSD))  # patch (0, 0) at x=1000 y=2000
 CFG = LabelConfig()
@@ -74,8 +76,7 @@ def test_parallel_roads_are_never_connected() -> None:
     lab = render_window(
         roads([(100, -600), (100, 900)], [(150, -600), (150, 900)]), INV, P, GSD, CFG
     )
-    np.random.seed(0)
-    pts, samples = topo_labels(SAM, lab, P, GSD, CFG)
+    pts, samples = topo_labels(SAM, lab, P, GSD, CFG, seed=0)
     n_conn = 0
     for pairs, connected, valid in samples:
         for (s, t), c, v in zip(pairs, connected, valid, strict=True):
@@ -89,8 +90,7 @@ def test_parallel_roads_are_never_connected() -> None:
 @pytest.mark.parametrize("rot", [0, 1, 2, 3])
 def test_points_follow_rotation(rot: int) -> None:
     lab = render_window(T_JUNCTION, INV, P, GSD, CFG)
-    np.random.seed(rot)
-    pts, _ = topo_labels(SAM, lab, P, GSD, CFG, rot=rot)
+    pts, _ = topo_labels(SAM, lab, P, GSD, CFG, rot=rot, seed=rot)
     road = np.rot90(lab.road_mask, rot, (0, 1))
     rc = np.clip(np.rint(pts[:, ::-1]).astype(int), 0, P - 1)  # (x, y) → (row, col)
     assert road[rc[:, 0], rc[:, 1]].mean() > 0.9

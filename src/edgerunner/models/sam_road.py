@@ -21,6 +21,8 @@ import torchvision
 from lightning.pytorch.loggers import TensorBoardLogger
 
 from .._sam_road import sam_model
+from ..data.types import Batch
+from .losses import compute_losses
 
 SAMRoad = sam_model().SAMRoad
 log = logging.getLogger(__name__)
@@ -52,28 +54,23 @@ class SAMRoadModule(SAMRoad):
         )
         self.save_hyperparameters()
 
-    def on_after_batch_transfer(self, batch: dict[str, Any], dataloader_idx: int) -> dict[str, Any]:
-        for key in ("rgb", "keypoint_mask", "road_mask"):
-            batch[key] = batch[key].float()  # rgb 0-255, masks {0, 1}
+    def on_after_batch_transfer(self, batch: Batch, dataloader_idx: int) -> Batch:
+        batch["rgb"] = batch["rgb"].float()  # 0-255
+        batch["keypoint_mask"] = batch["keypoint_mask"].float()  # {0,1}
+        batch["road_mask"] = batch["road_mask"].float()
         return batch
 
-    def _losses(self, batch: dict[str, Any]) -> tuple[torch.Tensor, ...]:
+    def _losses(self, batch: Batch) -> tuple[torch.Tensor, ...]:
         valid = batch["valid"]
         mask_logits, mask_scores, topo_logits, topo_scores = self(
             batch["rgb"], batch["graph_points"], batch["pairs"], valid
         )
-        gt_masks = torch.stack([batch["keypoint_mask"], batch["road_mask"]], dim=3)
-        pixels = batch["pixel_valid"]
-        if pixels.any():
-            mask_loss = self.mask_criterion(mask_logits[pixels], gt_masks[pixels])
-        else:
-            mask_loss = mask_logits.sum() * 0.0  # keep the autograd graph on empty imagery
-        topo = self.topo_criterion(topo_logits, batch["connected"].float().unsqueeze(-1))
-        w = valid.float().unsqueeze(-1)
-        topo_loss = (topo * w).sum() / w.sum().clamp(min=1.0)  # 0, not NaN, without any road
+        mask_loss, topo_loss = compute_losses(
+            mask_logits, topo_logits, batch, self.mask_criterion, self.topo_criterion
+        )
         return mask_loss, topo_loss, mask_scores, topo_scores
 
-    def training_step(self, batch: dict[str, Any], batch_idx: int) -> torch.Tensor:
+    def training_step(self, batch: Batch, batch_idx: int) -> torch.Tensor:
         mask_loss, topo_loss, _, _ = self._losses(batch)
         loss = mask_loss + topo_loss
         self.log_dict(
@@ -85,7 +82,7 @@ class SAMRoadModule(SAMRoad):
         )
         return loss
 
-    def validation_step(self, batch: dict[str, Any], batch_idx: int) -> None:
+    def validation_step(self, batch: Batch, batch_idx: int) -> None:
         mask_loss, topo_loss, mask_scores, topo_scores = self._losses(batch)
         self.log_dict(
             {
@@ -112,7 +109,7 @@ class SAMRoadModule(SAMRoad):
         topo_gt = (1 - valid) * -1 + valid * batch["connected"].int()  # -1 = ignored padding
         self.topo_f1.update(topo_scores, topo_gt.unsqueeze(-1))
 
-    def _log_images(self, batch: dict[str, Any], mask_scores: torch.Tensor) -> None:
+    def _log_images(self, batch: Batch, mask_scores: torch.Tensor) -> None:
         """Rows of rgb | gt keypoint | gt road | pred keypoint | pred road."""
         tbs = [lg for lg in self.loggers if isinstance(lg, TensorBoardLogger)]
         if not tbs or not self.trainer.is_global_zero:

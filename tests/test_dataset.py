@@ -15,6 +15,8 @@ from edgerunner.data.dataset import IGNSamRoadDataset, collate
 from edgerunner.data.roads import read_roads
 from edgerunner.data.toy import X0, Y_TOP
 
+pytestmark = pytest.mark.integration
+
 
 def sam_cfg(patch: int, gsd: float) -> dict[str, Any]:
     px = lambda m: round(m / gsd)  # noqa: E731
@@ -88,26 +90,19 @@ def test_same_footprint_at_0_8_m(toy: Path) -> None:
 def test_valid_frac_sees_nodata(toy: Path) -> None:
     ds = make(toy, ["4"], gsd=0.2)  # 256 COG px windows
     ds._check_process()
-    assert ds._valid_frac(ds.tile("toy_4"), 0, 768) == 0.0  # last quarter of the tile is 0
-    assert ds._valid_frac(ds.tile("toy_4"), 0, 0) == 1.0
+    assert (
+        ds.rasters.valid_fraction(ds.tile("toy_4").uri, 0, 768, ds.native) == 0.0
+    )  # last quarter of the tile is 0
+    assert ds.rasters.valid_fraction(ds.tile("toy_4").uri, 0, 0, ds.native) == 1.0
 
 
 def test_pickles_without_handles(toy: Path) -> None:
     ds = make(toy, ["0"])
     ds[0]
-    assert ds._src and ds._roads
+    assert ds.rasters._sources and ds._roads
     clone = pickle.loads(pickle.dumps(ds))
-    assert not clone._src and not clone._roads and clone._rng is None
+    assert not clone.rasters._sources and not clone._roads and clone._rng is None
     assert clone[0]["rgb"].shape == (256, 256, 3)
-
-
-def test_collate_pads_points() -> None:
-    items = [
-        {"graph_points": torch.ones(n, 2), "rgb": torch.zeros(2, 2), "tile_id": "t"} for n in (3, 5)
-    ]
-    b = collate(items)
-    assert b["graph_points"].shape == (2, 5, 2) and b["graph_points"][0, 3:].abs().sum() == 0
-    assert b["rgb"].shape == (2, 2, 2) and b["tile_id"] == ["t", "t"]
 
 
 @pytest.mark.parametrize("ctx", ["fork", "forkserver"])
@@ -140,38 +135,14 @@ def test_nodata_mask_and_topology_follow_rotation(toy: Path, rot: int) -> None:
     assert not empty["pixel_valid"].any() and not empty["valid"].any()
 
 
-def test_raster_cache_closes_least_recently_used(toy: Path) -> None:
-    ds = make(toy, ["0", "1", "2"], raster_cache_size=2)
-    ds._check_process()
-    first = ds._open(ds.tile("toy_0").uri)
-    second = ds._open(ds.tile("toy_1").uri)
-    assert ds._open(ds.tile("toy_0").uri) is first  # refresh recency
-    third = ds._open(ds.tile("toy_2").uri)
-    assert second.closed and not first.closed and not third.closed
-    assert len(ds._src) == 2
-    reopened = ds._open(ds.tile("toy_1").uri)
-    assert reopened is not second and not reopened.closed and first.closed
-    ds.close()
-    assert reopened.closed and third.closed and not ds._src
-
-
-def test_gdal_mask_excludes_nonzero_pixels(toy: Path, tmp_path: Path) -> None:
-    import rasterio
-
-    ds = make(toy, ["0"], gsd=0.2)
-    tile = ds.tile("toy_0")
-    with rasterio.open(toy / "cog" / tile.uri) as original:
-        profile = original.profile
-    masked = tmp_path / "masked.tif"
-    with rasterio.open(masked, "w", **profile) as dst:
-        dst.write(np.full((3, 1024, 1024), 128, dtype=np.uint8))
-        mask = np.full((1024, 1024), 255, dtype=np.uint8)
-        mask[:, 128:] = 0
-        dst.write_mask(mask)
-    ds._check_process()
-    ds._src[tile.uri] = rasterio.open(masked)
-    item = ds.read(tile, 0, 0)
-    assert item["rgb"].min() == 128
-    assert item["pixel_valid"][:, :128].all()
-    assert not item["pixel_valid"][:, 128:].any()
-    ds.close()
+def test_validation_preserves_numpy_rng_and_labels_across_reads(toy: Path) -> None:
+    ds = make(toy, ["4"], mode="eval")
+    before = np.random.get_state()
+    first = ds[0]
+    after = np.random.get_state()
+    assert before[0] == after[0] and before[2:] == after[2:]
+    np.testing.assert_array_equal(before[1], after[1])
+    ds[1]  # interleave another patch
+    again = ds[0]
+    for key in ("graph_points", "pairs", "valid", "connected"):
+        assert torch.equal(first[key], again[key])

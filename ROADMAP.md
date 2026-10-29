@@ -12,6 +12,9 @@
   **uniquement sur données synthétiques**, en local.
 - **Revue du 2026-10-29** : corrections nodata, cache raster et copies NVMe ; 36 tests CPU
   réussis, Ruff/formatage/Pyright et syntaxe Bash validés. Exécution SLURM à vérifier.
+- **Modularisation du 2026-10-29** : calcul des losses, lecture raster, choix des fenêtres,
+  visibilité et collate isolés ; contrats typés ; script NVMe autonome ; RNG NumPy restauré.
+  Validation : 52 tests dont 12 via `just unit` ; qualité du code et syntaxe Bash validées.
 - **Prochain** : **CP7** (validation sur vraies dalles, accès au cluster SLURM requis).
   Sans accès au cluster : faire **CP9** (inférence sur dalle entière) sur le jeu toy.
 - **Git** : branche `main` sur github.com/speillet/EdgeRunner, un commit par élément du dépôt
@@ -63,7 +66,11 @@ just toy && just dev         # exit 0
 | `src/edgerunner/_sam_road.py` | Met `third_party/sam_road` (+ `/sam`) sur le `sys.path`, charge `dataset.py` / `model.py` sous des noms uniques, module `wandb` factice |
 | `src/edgerunner/data/roads.py` | BD TOPO par bbox via `pyarrow.dataset` (filtres : en service, non fictif, ni sentier / escalier / bac, ni tunnel) |
 | `src/edgerunner/data/labels.py` | `render_window` (masques + graphe sat2graph sur patch + marge), `WindowGraphLabeler` (`__init__` amont paramétré), `topo_labels` |
-| `src/edgerunner/data/dataset.py` | `IGNSamRoadDataset(root, folds, sam_cfg, …)`, `collate`, `make_loaders` |
+| `src/edgerunner/data/dataset.py` | Orchestration `IGNSamRoadDataset` et `make_loaders` ; réexport de `collate` |
+| `src/edgerunner/data/raster.py` | Lecture de fenêtres et cache LRU des handles par processus |
+| `src/edgerunner/data/sampling.py` | Grille d’éval, tirage des fenêtres et contexte RNG NumPy amont |
+| `src/edgerunner/data/types.py`, `batch.py`, `transforms.py` | Contrats typés, collate et visibilité des paires |
+| `src/edgerunner/models/losses.py` | Losses sur tenseurs, sans SAM ni Lightning |
 | `src/edgerunner/data/toy.py` | Jeu synthétique au même format que les vraies données |
 | `src/edgerunner/models/sam_road.py` | `SAMRoadModule(SAMRoad)` |
 | `src/edgerunner/train.py` | `@hydra.main` : construction explicite (pas de `_target_`), `build_loaders(cfg)`, `provenance(data_root)`, ClearML optionnel |
@@ -73,7 +80,7 @@ just toy && just dev         # exit 0
 | `.github/workflows/ci.yml` | CI : `just submodules`, `uv sync --locked --extra clearml`, `just test`, hooks pre-commit |
 | `.pre-commit-config.yaml` | hooks : YAML/TOML, fin de fichier, espaces, gros fichiers, ruff check + format (version de uv.lock) |
 | `LICENSE`, `CITATION.cff` | MIT ; citation du dépôt + SAM-Road + Segment Anything |
-| `sbatch/train_samroad.sh` | Copie sur le NVMe de chaque nœud (arborescence `data_root`), puis DDP 2 × 3 A40 ou smoke |
+| `sbatch/train_samroad.sh`, `stage_data.sh` | SLURM et script de copie NVMe testable séparément |
 
 ## 3. Contrats à ne pas casser
 
@@ -213,7 +220,8 @@ just toy && just dev         # exit 0
   lancés). Conséquences : `collate` au niveau du module, et le dataset se picke sans handles
   ouverts (`__getstate__`).
 - RNG : `_check_process` réinitialise par processus (`torch.initial_seed()` + `RANK`) ;
-  `sample_patch` amont tire dans `np.random` global, donc l'éval réinitialise la graine par index.
+  `sample_patch` amont est isolé par un contexte qui restaure le RNG global ; graine par index
+  en éval, graines tirées du RNG du worker en train (séquence modifiée par la modularisation).
 - Mémoire : sur l'A2000 locale (12 Go), seul 1024 px en batch 1 passe (avec
   `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`). Pour le dev, utiliser 0.8 m / 512.
 - Toy : le pont ne doit pas passer par les nœuds de la grille (cf. CP12).
@@ -242,3 +250,4 @@ just toy && just dev         # exit 0
 | 2026-10-28 | CP6c | Claude (Opus) | Bonnes pratiques : CI, pre-commit, pyright, provenance, cu126, licence MIT. 6 erreurs ruff masquées par l'ancien `.gitignore` corrigées. |
 | 2026-10-28 | CP7 (local) | Claude (Opus) | Vraies dalles (index de test provisoire, 6 dalles) : smoke 109 ex/s, 3 époques en 15 min à 2 it/s, val_loss 0.092 → 0.071, road_iou@0.5 encore ≈ 0 (carte de route déjà visible sous 0.5) : entraînement trop court, à prolonger sur le cluster. |
 | 2026-10-29 | Revue | Codex | Exclusion des pixels sans image des losses/IoU et des extrémités topo invalides ; cache raster LRU avec fermeture ; propagation des échecs rsync parallèles. 36 tests réussis, Ruff/formatage/Pyright OK, syntaxe Bash valide ; copie simulée hors SLURM. |
+| 2026-10-29 | Modularisation | Codex | Losses indépendantes de SAM/Lightning, lecture/cache raster et sampling séparés, visibilité/collate typés, RNG amont isolé et script NVMe extrait. 52 tests CPU dont 12 unitaires sans dataset/checkpoint ; Ruff, formatage, Pyright et syntaxe Bash validés. SLURM non exécuté. |
