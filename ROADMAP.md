@@ -6,10 +6,12 @@
 
 ## 0. Reprendre ici
 
-- **Dernière mise à jour** : 2026-10-28.
+- **Dernière mise à jour** : 2026-10-29.
 - **Fait** : CP0 → CP6, CP6b (simplification : 1 YAML, Justfile, plus de wandb) et CP6c
   (bonnes pratiques : CI, pre-commit, pyright, provenance, torch cu126, licence). Validé
   **uniquement sur données synthétiques**, en local.
+- **Revue du 2026-10-29** : corrections nodata, cache raster et copies NVMe ; 36 tests CPU
+  réussis, Ruff/formatage/Pyright et syntaxe Bash validés. Exécution SLURM à vérifier.
 - **Prochain** : **CP7** (validation sur vraies dalles, accès au cluster SLURM requis).
   Sans accès au cluster : faire **CP9** (inférence sur dalle entière) sur le jeu toy.
 - **Git** : branche `main` sur github.com/speillet/EdgeRunner, un commit par élément du dépôt
@@ -22,7 +24,7 @@ Vérifier l'état en 2 minutes :
 uv tool install rust-just    # ou préfixer chaque commande par : uvx --from rust-just
 git submodule status         # sam_road 04b67c5 ; sam 6fdee8f
 just setup                   # idempotent
-just test                    # attendu : 26 passed, ruff OK, 17 files formatted, pyright 0 error
+just test                    # tests CPU, ruff, formatage et pyright
 just toy && just dev         # exit 0
 ```
 
@@ -78,7 +80,7 @@ just toy && just dev         # exit 0
 - **Batch** (`collate`) : `rgb` uint8 [B,P,P,3] · `keypoint_mask`, `road_mask` uint8 {0,1} [B,P,P]
   (le module les convertit en float dans `on_after_batch_transfer`) · `graph_points` float32
   [B,N,2] en (x, y) dans le repère du patch, complété par des zéros · `pairs` int32 [B,S,Q,2] ·
-  `connected`, `valid` bool [B,S,Q] · `tile_id`, `row_off`, `col_off`, `rot` en listes.
+  `connected`, `valid` bool [B,S,Q] · `pixel_valid` bool [B,P,P] (image disponible) · `tile_id`, `row_off`, `col_off`, `rot` en listes.
 - **`data_root`** : `index/{tiles,windows}.parquet`, `cog/<uri>`, `bdtopo/troncon/dept=XX/`.
 - **Index** : `tiles.parquet` (`tile_id`, `uri` relatif à `data_root/cog`, `fold`, `width`, `height`,
   `valid_frac`, `geometry` L93) ; `windows.parquet` (`tile_id`, `fold`, `row_off`, `col_off`,
@@ -239,3 +241,4 @@ just toy && just dev         # exit 0
 | 2026-10-28 | CP6b | Claude (Opus) | Simplification validée : 25 tests, `just dev`, mini-run (ckpt + TB), smoke toy 148 échantillons/s avec 4 workers. |
 | 2026-10-28 | CP6c | Claude (Opus) | Bonnes pratiques : CI, pre-commit, pyright, provenance, cu126, licence MIT. 6 erreurs ruff masquées par l'ancien `.gitignore` corrigées. |
 | 2026-10-28 | CP7 (local) | Claude (Opus) | Vraies dalles (index de test provisoire, 6 dalles) : smoke 109 ex/s, 3 époques en 15 min à 2 it/s, val_loss 0.092 → 0.071, road_iou@0.5 encore ≈ 0 (carte de route déjà visible sous 0.5) : entraînement trop court, à prolonger sur le cluster. |
+| 2026-10-29 | Revue | Codex | Exclusion des pixels sans image des losses/IoU et des extrémités topo invalides ; cache raster LRU avec fermeture ; propagation des échecs rsync parallèles. 36 tests réussis, Ruff/formatage/Pyright OK, syntaxe Bash valide ; copie simulée hors SLURM. |

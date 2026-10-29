@@ -117,6 +117,11 @@ bdtopo/troncon/ ───────► routes de l'emprise de la dalle, en cac
 Pourquoi la marge de 64 m : une route qui sort du patch garde ses vrais voisins, donc pas de
 fausse extrémité au bord, et le BFS de sam_road peut sortir du patch puis y revenir.
 
+Les zones sans image (masque GDAL ou RVB entièrement nul) sont exclues des losses et des
+IoU ; les paires topologiques dont un point tombe dans ces zones sont ignorées. Les COG
+ouverts sont conservés dans un cache LRU de 32 fichiers par dataset et worker
+(surcharge : `+data.raster_cache_size=16`).
+
 En validation : fenêtres fixes de `windows.parquet`, découpées en patches, sans rotation, avec des
 labels identiques d'une époque à l'autre.
 

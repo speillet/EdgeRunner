@@ -63,7 +63,11 @@ class SAMRoadModule(SAMRoad):
             batch["rgb"], batch["graph_points"], batch["pairs"], valid
         )
         gt_masks = torch.stack([batch["keypoint_mask"], batch["road_mask"]], dim=3)
-        mask_loss = self.mask_criterion(mask_logits, gt_masks)
+        pixels = batch["pixel_valid"]
+        if pixels.any():
+            mask_loss = self.mask_criterion(mask_logits[pixels], gt_masks[pixels])
+        else:
+            mask_loss = mask_logits.sum() * 0.0  # keep the autograd graph on empty imagery
         topo = self.topo_criterion(topo_logits, batch["connected"].float().unsqueeze(-1))
         w = valid.float().unsqueeze(-1)
         topo_loss = (topo * w).sum() / w.sum().clamp(min=1.0)  # 0, not NaN, without any road
@@ -98,8 +102,12 @@ class SAMRoadModule(SAMRoad):
         if batch_idx == 0:
             self._log_images(batch, mask_scores)
 
-        self.keypoint_iou.update(mask_scores[..., 0], batch["keypoint_mask"].int())
-        self.road_iou.update(mask_scores[..., 1], batch["road_mask"].int())
+        pixels = batch["pixel_valid"]
+        if pixels.any():
+            self.keypoint_iou.update(
+                mask_scores[..., 0][pixels], batch["keypoint_mask"][pixels].int()
+            )
+            self.road_iou.update(mask_scores[..., 1][pixels], batch["road_mask"][pixels].int())
         valid = batch["valid"].int()
         topo_gt = (1 - valid) * -1 + valid * batch["connected"].int()  # -1 = ignored padding
         self.topo_f1.update(topo_scores, topo_gt.unsqueeze(-1))
